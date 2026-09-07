@@ -9,6 +9,16 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    # Explicit, not implied: GitHub's default (unspecified) shell selection
+    # does NOT apply `-o pipefail` (confirmed against actions/runner-images#4459
+    # and GitHub's own corrected docs — a piped command's exit status is the
+    # last command in the pipe, e.g. `cmd | tee file` reports tee's exit code,
+    # not cmd's, which would let a real test failure show green). Setting
+    # `shell: bash` here applies `-eo pipefail` to every run step below.
+    shell: bash
+
 jobs:
   # ---------------------------------------------------------------------
   # Job 1 — real pip install + the full test suite, including the two
@@ -33,30 +43,90 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Confirm the previously-blocked stack actually imports
+        # Uses importlib.metadata rather than each package's own __version__
+        # attribute: stripe-python's own changelog (PR #1645, "lazily
+        # initialize subservices ... add module-level __getattr__ functions
+        # to most __init__.py files") means a bare `stripe.__version__` isn't
+        # guaranteed to resolve the same way release to release. Reading the
+        # installed distribution's metadata is stable regardless of what the
+        # package internally exposes, and still proves the import succeeded.
         run: |
-          python -c "import fastapi; print('fastapi', fastapi.__version__)"
-          python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
-          python -c "import pydantic; print('pydantic', pydantic.__version__)"
-          python -c "import stripe; print('stripe', stripe.__version__)"
+          python3 -c "
+          import importlib.metadata as m
+          for pkg in ['fastapi', 'sqlalchemy', 'pydantic', 'stripe']:
+              __import__(pkg)
+              print(f'{pkg} imports OK — installed version: {m.version(pkg)}')
+          "
 
       - name: Run full test suite (dependency-free + the two HTTP suites)
+        # Deliberately NOT gated on this step's own exit code: unittest's
+        # own summary line is parsed deterministically in the next step
+        # instead (see that step's comment for why). `|| true` plus a plain
+        # redirect (not a pipe) means this step's result never depends on
+        # shell pipefail semantics either way.
         run: |
-          python -m unittest \
+          python3 -m unittest \
             tests.test_core_logic \
             tests.test_security_core \
             tests.test_vapi_core \
             tests.test_payments_core \
             tests.test_api_security \
             tests.test_vapi_api \
-            -v 2>&1 | tee /tmp/test_output.log
+            -v > /tmp/test_output.log 2>&1 || true
+          cat /tmp/test_output.log
 
-      - name: Fail if test_api_security/test_vapi_api are still skipping
+      - name: Deterministically verify test count, zero skips, and a clean OK
+        # Stronger than grepping for one known skip-reason string: this
+        # parses unittest's own summary line and asserts (1) the test COUNT
+        # is unchanged from the established 223-test baseline — if it isn't,
+        # fail loudly and require investigation rather than silently
+        # accepting a different number: (2) zero skips of ANY kind, not just
+        # the one previously-known "FastAPI/SQLAlchemy stack not installed"
+        # reason - a differently-worded or unrelated skip must also fail
+        # this gate; (3) no FAILED/ERROR; (4) an actual standalone "OK" line.
         run: |
-          if grep -q "FastAPI/SQLAlchemy stack not installed" /tmp/test_output.log; then
-            echo "::error::test_api_security.py / test_vapi_api.py are still skipping — the real stack isn't actually being exercised."
-            exit 1
-          fi
-          echo "No skip-reason strings found — the previously-skipped suites ran for real."
+          python3 - <<'PYEOF'
+          import re
+          import sys
+
+          with open("/tmp/test_output.log") as f:
+              log = f.read()
+
+          m = re.search(r"Ran (\d+) tests? in", log)
+          if not m:
+              print("::error::Could not find unittest's 'Ran N tests' summary "
+                    "line — the run may have crashed before finishing.")
+              sys.exit(1)
+          ran = int(m.group(1))
+
+          EXPECTED = 223
+          if ran != EXPECTED:
+              print(f"::error::Expected exactly {EXPECTED} tests (the established "
+                    f"baseline recorded in docs/TASK_BOARD.md) but {ran} ran. "
+                    f"Investigate why the count changed — do not just update "
+                    f"this number to make CI pass.")
+              sys.exit(1)
+
+          tail = "\n".join(log.strip().splitlines()[-8:])
+
+          if re.search(r"skipped=\d+", log):
+              print(f"::error::Test run reports one or more skips — zero skips "
+                    f"are required once the real dependency stack is installed, "
+                    f"a skipped test is not a passed test. Tail of output:\n{tail}")
+              sys.exit(1)
+
+          if re.search(r"\b(FAILED|ERROR)\b", tail):
+              print(f"::error::Test run reported failures/errors:\n{tail}")
+              sys.exit(1)
+
+          if not re.search(r"^OK\s*$", tail, re.MULTILINE):
+              print(f"::error::Did not find a clean standalone 'OK' result "
+                    f"line. Tail of output:\n{tail}")
+              sys.exit(1)
+
+          print(f"PASS — {ran} tests ran (matches the {EXPECTED}-test "
+                f"baseline), 0 skips, clean OK.")
+          PYEOF
 
   # ---------------------------------------------------------------------
   # Job 2 — the actual containerized stack: docker compose up, alembic
@@ -68,13 +138,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Write a CI .env (mock providers — no live Stripe/Vapi/Twilio needed for T-1)
+        # Neither SECRET_KEY nor FIELD_ENCRYPTION_KEY is actually enforced by
+        # Settings.validate_for_production() in development mode (that
+        # validator only fires when APP_ENV=production — confirmed by
+        # reading app/core/config.py directly), so the app would boot
+        # without these. They're generated anyway to mirror a realistic
+        # environment; FIELD_ENCRYPTION_KEY specifically must be a real
+        # Fernet key, not an arbitrary string, or passport-encryption code
+        # would reject it the moment it's actually used.
         run: |
           SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+          python3 -m pip install --quiet cryptography
+          FIELD_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
           cat > .env <<EOF
           APP_ENV=development
           DATABASE_URL=postgresql+psycopg://charter123:charter123_dev_password@postgres:5432/charter123
           REDIS_URL=redis://redis:6379/0
           SECRET_KEY=${SECRET_KEY}
+          FIELD_ENCRYPTION_KEY=${FIELD_KEY}
           BOOTSTRAP_ADMIN_ENABLED=false
           AIRLINE_PROVIDER=mock
           PAYMENT_PROVIDER=mock
@@ -83,15 +164,24 @@ jobs:
           NEXT_PUBLIC_API_URL=http://localhost:8000
           LOG_LEVEL=INFO
           EOF
-          # FIELD_ENCRYPTION_KEY must be a real Fernet key, not an arbitrary string.
-          python3 -m pip install --quiet cryptography
-          FIELD_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-          echo "FIELD_ENCRYPTION_KEY=${FIELD_KEY}" >> .env
 
       - name: docker compose up
+        # Compose V2 ("docker compose", not the old hyphenated "docker-compose"
+        # v1 binary) is preinstalled on GitHub's ubuntu-latest/ubuntu-24.04
+        # runners (confirmed against actions/runner-images' own Ubuntu 24.04
+        # readme). docker-compose.yml's postgres/redis already declare
+        # healthchecks with `api: depends_on: {postgres,redis}: condition:
+        # service_healthy`, so Compose itself won't start the api container
+        # until both are actually healthy, not just started.
         run: docker compose up -d --build
 
       - name: Wait for the api container to report ready
+        # /api/v1/health/ready checks DB connectivity via a bare `SELECT 1`
+        # (confirmed by reading app/api/routes/health.py) plus a Redis ping —
+        # neither requires any table to exist, so this is safe to check
+        # BEFORE migrations run: it is only proving the container booted and
+        # can reach postgres/redis, not that the schema is correct yet. The
+        # real schema-dependent proof is the re-check after alembic+seed below.
         run: |
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8000/api/v1/health/ready | grep -q '"ready"'; then
@@ -106,6 +196,10 @@ jobs:
           exit 1
 
       - name: Apply migrations (alembic upgrade head)
+        # app/db/migrations/env.py overrides alembic.ini's placeholder URL
+        # with get_settings().database_url (confirmed by reading env.py
+        # directly) so this correctly targets the compose network's
+        # postgres service, not the placeholder in alembic.ini.
         run: docker compose exec -T api alembic upgrade head
 
       - name: Seed reference data

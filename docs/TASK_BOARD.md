@@ -102,6 +102,49 @@ dependency).
     owner running this on their own machine/CI with real network access
     (as already recommended), or enabling network access for Claude's
     tool in this product's settings, if that option exists here.
+- **Workflow hardened (2026-09-07, fourth attempt — still NOT run):**
+  validated `.github/workflows/t1-verify.yml` line-by-line against the
+  real repo (not assumed correct) and fixed two real defects found by
+  that validation, both confirmed against external sources, not
+  assumption:
+  1. **Silent-pass bug:** the test-run step piped output through `tee`
+     without `shell: bash` explicitly set. GitHub Actions' default
+     (unspecified) shell does NOT apply `pipefail` (confirmed against
+     `actions/runner-images#4459`, a reported case of exactly this
+     masking a real test failure, and GitHub's own corrected docs) — so
+     `cmd | tee file` would have reported `tee`'s exit code, not the
+     test run's, meaning a real test failure could have shown green.
+     Fixed with `defaults: run: shell: bash` at the workflow level, and
+     the test step now redirects to a file instead of piping, with a
+     separate step deterministically parsing the captured output
+     (exact 223-test count, zero skips of any kind — not just the one
+     previously-known skip string —, no FAILED/ERROR, a clean `OK`
+     line). Validated by actually running this parser against four
+     synthetic unittest outputs (clean pass / still-skipping /
+     wrong-count / real-failure) before trusting it.
+  2. **Fragile version check:** `stripe.__version__` was not confirmed
+     to exist on the pinned `stripe>=11.1,<12.0` — stripe-python's own
+     changelog (PR #1645) describes moving to lazy `__getattr__`-based
+     attribute resolution, so a bare `__version__` access isn't
+     guaranteed stable. Replaced with `importlib.metadata.version()` for
+     all four packages, which reads installed-distribution metadata
+     regardless of what a package internally exposes.
+  Also explicitly checked and confirmed correct (no changes needed):
+  readiness-before-migration ordering (`/ready` only does `SELECT 1` +
+  Redis ping, confirmed by reading `health.py` — safe pre-migration);
+  `test_api_security.py`/`test_vapi_api.py` use `unittest.TestCase` with
+  a `setUp()`-level `SkipTest` (confirmed by reading the files), so
+  `python -m unittest` genuinely exercises them once deps install,
+  regardless of their own docstrings suggesting `pytest`; Docker Compose
+  V2 is preinstalled on `ubuntu-latest` (confirmed against
+  `actions/runner-images`' own Ubuntu 24.04 readme); postgres/redis
+  service names and ports match `docker-compose.yml` exactly; `alembic`'s
+  `env.py` overrides `alembic.ini`'s placeholder URL from
+  `get_settings().database_url` (confirmed by reading `env.py`), so
+  migrations target the right database; `python -m app.db.seed` matches
+  the script's own documented invocation.
+  **Still NOT run** — no GitHub Actions execution has occurred. Status
+  remains **BLOCKED**.
 - **Tooling prepared (2026-09-07, third attempt):** since Claude's own
   sandbox has no network/Docker and no GitHub connector is available to
   it (checked — no GitHub or CI connector is connected in this
