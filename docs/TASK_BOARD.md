@@ -102,6 +102,18 @@ dependency).
     owner running this on their own machine/CI with real network access
     (as already recommended), or enabling network access for Claude's
     tool in this product's settings, if that option exists here.
+- **Tooling prepared (2026-09-07, third attempt):** since Claude's own
+  sandbox has no network/Docker and no GitHub connector is available to
+  it (checked — no GitHub or CI connector is connected in this
+  workspace), `.github/workflows/t1-verify.yml` was written and added to
+  this repo, grounded in the actual `docker-compose.yml`, `Dockerfile`s,
+  `alembic.ini`, and `app/db/seed.py` — not guessed. It has NOT been run.
+  Two jobs: (1) real `pip install` + the full test suite, failing the
+  build if `test_api_security.py`/`test_vapi_api.py` still skip; (2)
+  `docker compose up`, `alembic upgrade head`, `python -m app.db.seed`,
+  and a live `/api/v1/health/ready` check. Status stays **BLOCKED** here
+  until the project owner pushes this file and runs it on GitHub, and
+  the actual pass/fail result is reported back.
 - **Remaining to close this task:** run in an environment with actual
   network access to PyPI (outside this sandbox), then complete WBS-1.2
   through WBS-1.7 (`docker compose up`, `alembic upgrade head`,

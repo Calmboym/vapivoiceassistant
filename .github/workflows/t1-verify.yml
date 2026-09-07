@@ -1,0 +1,123 @@
+name: T-1 — Full stack verification
+
+# Manual trigger (Actions tab -> "T-1 — Full stack verification" -> "Run workflow"),
+# plus automatic runs on push/PR so this doesn't silently rot.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Job 1 — real pip install + the full test suite, including the two
+  # suites that only skip because fastapi/sqlalchemy aren't installed
+  # (tests/test_api_security.py, tests/test_vapi_api.py). WBS-1.1 / 1.2.
+  # ---------------------------------------------------------------------
+  install-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Confirm the previously-blocked stack actually imports
+        run: |
+          python -c "import fastapi; print('fastapi', fastapi.__version__)"
+          python -c "import sqlalchemy; print('sqlalchemy', sqlalchemy.__version__)"
+          python -c "import pydantic; print('pydantic', pydantic.__version__)"
+          python -c "import stripe; print('stripe', stripe.__version__)"
+
+      - name: Run full test suite (dependency-free + the two HTTP suites)
+        run: |
+          python -m unittest \
+            tests.test_core_logic \
+            tests.test_security_core \
+            tests.test_vapi_core \
+            tests.test_payments_core \
+            tests.test_api_security \
+            tests.test_vapi_api \
+            -v 2>&1 | tee /tmp/test_output.log
+
+      - name: Fail if test_api_security/test_vapi_api are still skipping
+        run: |
+          if grep -q "FastAPI/SQLAlchemy stack not installed" /tmp/test_output.log; then
+            echo "::error::test_api_security.py / test_vapi_api.py are still skipping — the real stack isn't actually being exercised."
+            exit 1
+          fi
+          echo "No skip-reason strings found — the previously-skipped suites ran for real."
+
+  # ---------------------------------------------------------------------
+  # Job 2 — the actual containerized stack: docker compose up, alembic
+  # migration, seed data, and a live readiness check. WBS-1.4 / 1.5 / 1.6.
+  # ---------------------------------------------------------------------
+  docker-compose-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write a CI .env (mock providers — no live Stripe/Vapi/Twilio needed for T-1)
+        run: |
+          SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+          cat > .env <<EOF
+          APP_ENV=development
+          DATABASE_URL=postgresql+psycopg://charter123:charter123_dev_password@postgres:5432/charter123
+          REDIS_URL=redis://redis:6379/0
+          SECRET_KEY=${SECRET_KEY}
+          BOOTSTRAP_ADMIN_ENABLED=false
+          AIRLINE_PROVIDER=mock
+          PAYMENT_PROVIDER=mock
+          FRONTEND_URL=http://localhost:3000
+          CORS_ORIGINS=http://localhost:3000
+          NEXT_PUBLIC_API_URL=http://localhost:8000
+          LOG_LEVEL=INFO
+          EOF
+          # FIELD_ENCRYPTION_KEY must be a real Fernet key, not an arbitrary string.
+          python3 -m pip install --quiet cryptography
+          FIELD_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+          echo "FIELD_ENCRYPTION_KEY=${FIELD_KEY}" >> .env
+
+      - name: docker compose up
+        run: docker compose up -d --build
+
+      - name: Wait for the api container to report ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/api/v1/health/ready | grep -q '"ready"'; then
+              echo "API is ready."
+              exit 0
+            fi
+            echo "Waiting for API readiness... ($i/30)"
+            sleep 3
+          done
+          echo "::error::API never became ready."
+          docker compose logs api
+          exit 1
+
+      - name: Apply migrations (alembic upgrade head)
+        run: docker compose exec -T api alembic upgrade head
+
+      - name: Seed reference data
+        run: docker compose exec -T api python -m app.db.seed
+
+      - name: Re-check readiness after migrate + seed
+        run: curl -fsS http://localhost:8000/api/v1/health/ready | tee /tmp/ready.json | grep -q '"ready"'
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
