@@ -1,0 +1,71 @@
+:root {
+  --font-display: ui-sans-serif, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background-color: #0b1220;
+  color: #edeff4;
+  font-family: var(--font-display);
+}
+
+body {
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 20% 15%, rgba(200, 155, 60, 0.06), transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(200, 155, 60, 0.05), transparent 45%),
+    radial-gradient(rgba(139, 147, 167, 0.35) 1px, transparent 1px);
+  background-size: auto, auto, 28px 28px;
+  background-position: 0 0, 0 0, 0 0;
+}
+
+/* Instrument-panel corner brackets — used once, on the status board, as
+   the page's signature element. Not reused as generic decoration. */
+.panel-brackets {
+  position: relative;
+}
+.panel-brackets::before,
+.panel-brackets::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: #c89b3c;
+  opacity: 0.8;
+}
+.panel-brackets::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid;
+  border-left: 2px solid;
+}
+.panel-brackets::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid;
+  border-right: 2px solid;
+}
+
+.leader-line {
+  flex: 1;
+  border-bottom: 1px dotted rgba(139, 147, 167, 0.45);
+  margin: 0 12px;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .status-pulse {
+    animation: pulse-dot 2.4s ease-in-out infinite;
+  }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
