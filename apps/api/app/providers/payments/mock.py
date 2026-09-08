@@ -19,6 +19,13 @@ Determinism, concretely:
     are the ONLY way a mock session's state ever changes — there is no
     background clock, no real network call, nothing "happens" on its
     own. A test drives the exact scenario it wants and nothing else.
+  - `refund_payment()` (T-3) is looked up by `payment_intent_id`, not
+    `provider_session_id` — matching what a real refund actually acts on
+    (see PaymentProvider.refund_payment's docstring). The same
+    idempotency_key always returns the same RefundResult; refunding more
+    than what's left on the payment (tracked per-session, across
+    however many partial refund_payment calls) raises PaymentRefundError
+    rather than silently over-refunding.
 """
 
 from __future__ import annotations
@@ -35,8 +42,11 @@ from app.providers.payments.base import (
     CheckoutSession,
     CheckoutSessionStatus,
     PaymentProvider,
+    PaymentRefundError,
     PaymentSessionNotFoundError,
     PaymentStatusResult,
+    RefundResult,
+    RefundStatus,
     WebhookEvent,
     WebhookVerificationError,
 )
@@ -60,6 +70,7 @@ class _MockSession:
     payment_paid: bool = False
     payment_intent_id: Optional[str] = None
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(hours=24))
+    refunded_amount: Decimal = field(default_factory=lambda: Decimal("0"))
 
 
 class MockPaymentProvider(PaymentProvider):
@@ -69,6 +80,7 @@ class MockPaymentProvider(PaymentProvider):
         self._lock = threading.Lock()
         self._by_idempotency_key: dict[str, str] = {}  # idempotency_key -> provider_session_id
         self._sessions: dict[str, _MockSession] = {}   # provider_session_id -> session
+        self._refunds: dict[str, RefundResult] = {}    # idempotency_key -> RefundResult (dedup, mirrors sessions)
 
     def _session_id_for(self, idempotency_key: str) -> str:
         digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
@@ -119,6 +131,45 @@ class MockPaymentProvider(PaymentProvider):
                 payment_paid=s.payment_paid, payment_intent_id=s.payment_intent_id,
                 amount=s.amount, currency=s.currency,
             )
+
+    def refund_payment(
+        self,
+        *,
+        payment_intent_id: str,
+        amount: Decimal,
+        currency: str,
+        idempotency_key: str,
+        reason: Optional[str] = None,
+    ) -> RefundResult:
+        del reason  # not needed by the mock — real Stripe just records it on the Refund object
+        with self._lock:
+            existing = self._refunds.get(idempotency_key)
+            if existing is not None:
+                # Idempotent replay — same key, same refund, no double
+                # refund. Same reasoning as create_checkout_session.
+                return existing
+
+            session = next(
+                (s for s in self._sessions.values() if s.payment_intent_id == payment_intent_id), None
+            )
+            if session is None:
+                raise PaymentRefundError(f"No such payment intent to refund: {payment_intent_id}")
+            if not session.payment_paid:
+                raise PaymentRefundError(f"Payment intent {payment_intent_id} was never captured — nothing to refund.")
+            if session.refunded_amount + amount > session.amount:
+                remaining = session.amount - session.refunded_amount
+                raise PaymentRefundError(
+                    f"Refund amount {amount} {currency} exceeds the {remaining} {currency} remaining on this payment."
+                )
+
+            digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+            refund_id = f"mock_re_{digest[:24]}"
+            result = RefundResult(
+                provider_refund_id=refund_id, status=RefundStatus.SUCCEEDED, amount=amount, currency=currency
+            )
+            session.refunded_amount += amount
+            self._refunds[idempotency_key] = result
+            return result
 
     def verify_and_parse_webhook(self, payload: bytes, signature_header: Optional[str]) -> WebhookEvent:
         if signature_header != MOCK_VALID_SIGNATURE:

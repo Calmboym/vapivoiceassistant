@@ -37,6 +37,17 @@ milestone, not assumed from training data) — specifically:
     than using the unambiguous, long-documented legacy call style. If a
     later milestone standardizes on StripeClient across this codebase,
     port this one file — nothing above PaymentProvider changes either way.
+  - refund_payment (T-3, added this session): `stripe.Refund.create`
+    against `payment_intent` (not `charge` — this codebase always has
+    the PaymentIntent id, never needs the Charge id lookup path Stripe's
+    docs also describe), with an optional integer `amount` for a partial
+    refund and `reason` restricted by Stripe to `duplicate`/
+    `fraudulent`/`requested_by_customer`. The Refund object's own
+    `status` (`pending`/`requires_action`/`succeeded`/`failed`/
+    `canceled`) is returned as-is via RefundStatus, not assumed to be
+    `succeeded` just because the API call didn't raise — confirmed
+    against docs.stripe.com/api/refunds/create and .../refunds/object
+    (fetched this session).
 
 "Verified against current documentation" is not the same claim as "was
 run." Do not represent this file as tested until it has actually been
@@ -64,12 +75,29 @@ from app.providers.payments.base import (
     CheckoutSessionStatus,
     PaymentProvider,
     PaymentProviderUnavailableError,
+    PaymentRefundError,
     PaymentSessionCreationError,
     PaymentSessionNotFoundError,
     PaymentStatusResult,
+    RefundResult,
+    RefundStatus,
     WebhookEvent,
     WebhookVerificationError,
 )
+
+# Stripe's own Refund.status values, verbatim (Refunds API reference,
+# fetched this session — T-3): "pending, requires_action, succeeded,
+# failed, or canceled". Mapped 1:1 onto RefundStatus rather than
+# assumed — an unrecognized value falls back to PENDING (never silently
+# treated as SUCCEEDED) so an unexpected future Stripe status can't
+# cause a refund to be recorded as done when it wasn't confirmed as such.
+_STRIPE_TO_INTERNAL_REFUND_STATUS = {
+    "pending": RefundStatus.PENDING,
+    "requires_action": RefundStatus.REQUIRES_ACTION,
+    "succeeded": RefundStatus.SUCCEEDED,
+    "failed": RefundStatus.FAILED,
+    "canceled": RefundStatus.CANCELED,
+}
 
 _STRIPE_TO_INTERNAL_SESSION_STATUS = {
     "open": CheckoutSessionStatus.OPEN,
@@ -160,6 +188,53 @@ class StripePaymentProvider(PaymentProvider):
             currency=currency,
             expires_at=datetime.fromtimestamp(session.expires_at, tz=timezone.utc),
             payment_intent_id=(session.payment_intent if isinstance(session.payment_intent, str) else None),
+        )
+
+    def refund_payment(
+        self,
+        *,
+        payment_intent_id: str,
+        amount: Decimal,
+        currency: str,
+        idempotency_key: str,
+        reason: Optional[str] = None,
+    ) -> RefundResult:
+        # Refunds API reference (docs.stripe.com/api/refunds/create,
+        # fetched this session, T-3): "you must specify a Charge or a
+        # PaymentIntent... You can optionally refund only part of a
+        # charge by specifying an amount... reason: duplicate,
+        # fraudulent, or requested_by_customer." `reason` is built as a
+        # dict key only when set, rather than passed as reason=None —
+        # this codebase's own rule against guessing undocumented SDK
+        # behavior (module docstring, and MASTER_RULES §4) means not
+        # assuming stripe-python silently drops a None kwarg for us.
+        kwargs = {
+            "payment_intent": payment_intent_id,
+            "amount": _to_minor_units(amount, currency),
+            "idempotency_key": idempotency_key,
+        }
+        if reason:
+            kwargs["reason"] = reason
+        try:
+            refund = stripe.Refund.create(**kwargs)
+        except stripe.InvalidRequestError as exc:  # pragma: no cover — needs a real Stripe account to exercise
+            # The documented rejection cases: PaymentIntent not found,
+            # already fully refunded, or amount exceeds what's left on
+            # the charge — all facts about this specific request, not a
+            # transient outage, matching PaymentRefundError's
+            # retryable=False.
+            raise PaymentRefundError(_safe_stripe_error_message(exc)) from exc
+        except stripe.StripeError as exc:  # pragma: no cover
+            raise PaymentProviderUnavailableError(_safe_stripe_error_message(exc)) from exc
+
+        return RefundResult(
+            provider_refund_id=refund.id,
+            # Falls back to PENDING (not SUCCEEDED) for a status value
+            # this mapping doesn't recognize — see the mapping's own
+            # comment on why that direction of fallback is the safe one.
+            status=_STRIPE_TO_INTERNAL_REFUND_STATUS.get(refund.status, RefundStatus.PENDING),
+            amount=amount,
+            currency=currency,
         )
 
     def get_session_status(self, provider_session_id: str) -> PaymentStatusResult:

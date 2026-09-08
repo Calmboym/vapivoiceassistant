@@ -42,8 +42,8 @@ class Payment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Populated once Stripe attaches a PaymentIntent to the session
     # (immediately for card payments; on completion for some other
     # methods) — kept distinct from provider_session_id because refunds
-    # (a later milestone, staff-only `refund_payment`) act on the
-    # PaymentIntent, not the Checkout Session.
+    # (staff-only `refund_payment`, T-3) act on the PaymentIntent, not
+    # the Checkout Session.
     provider_payment_intent_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
 
     status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
@@ -77,6 +77,42 @@ class Payment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # same trust level as ProviderError.message elsewhere in this codebase.
     failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     failure_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # --- Refund tracking (T-3 — TASK_BOARD.md) ---
+    #
+    # Deliberately NOT a new `status` value: `status` above stays
+    # "SUCCEEDED" forever once paid — a refund is a fact about the
+    # underlying PaymentIntent/Charge, layered on top of an already-
+    # terminal Checkout Session, not a change to the session's own
+    # lifecycle (see app/core/payments/state_machine.py's docstring,
+    # unmodified by this milestone on purpose — see
+    # tests.test_payments_core.StateMachineTests.
+    # test_booking_payment_status_mapping_never_produces_refunded, which
+    # this design keeps true rather than needing to update). A booking's
+    # own REFUNDED status still lives on Booking.payment_status exactly
+    # as before (app/models/booking.py's pre-existing PAYMENT_STATUSES) —
+    # set by PaymentService.refund_payment / CancellationService.cancel,
+    # never by anything here.
+    #
+    # A Payment can be refunded more than once (partial, then partial
+    # again, up to the total) — these columns hold the CUMULATIVE state
+    # of the latest refund attempt, not a list of every attempt. Each
+    # individual attempt is still fully recorded in the audit log
+    # (action="payment.refunded"/"payment.refund_pending"/
+    # "payment.refund_failed", resource_id=this Payment's id) — see
+    # PaymentService.apply_refund_outcome.
+    provider_refund_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    refunded_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    # Stripe's own Refund.status vocabulary, lowercase, on purpose
+    # distinct from `status` above's uppercase session-status vocabulary
+    # — see RefundStatus in app/providers/payments/base.py.
+    refund_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    refunded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Free-text, staff-supplied (standalone refund_payment route) or a
+    # fixed system value ("booking_cancelled" — CancellationService's
+    # auto-refund). Never rendered back to a customer verbatim without
+    # review — same caution as failure_message above.
+    refund_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Payment {self.id} {self.status} {self.amount} {self.currency}>"

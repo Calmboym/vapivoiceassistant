@@ -31,12 +31,12 @@ apps/web (Next.js)  →  apps/api (FastAPI)  →  AirlineProvider  →  MockAirl
 
 Flight search/quote/booking/cancel/modify (Phase 1-3), authentication/RBAC/
 security hardening (Phase 4), the Vapi webhook and tool layer (Phase 5),
-and payment-session creation via Stripe Checkout (Phase 7 Milestone 1,
+payment-session creation via Stripe Checkout (Phase 7 Milestone 1,
 labeled "Phase 6 Milestone 1" in its own handoff — see
-`docs/PROJECT_ROADMAP.md` §6.1 for why) are all built and covered by the
-dependency-free test suite. Not yet built: live telephony connection
-(the remainder of Phase 6), `refund_payment` (Phase 7 remainder),
-notifications (Phase 8), the admin dashboard (Phase 9), and the
+`docs/PROJECT_ROADMAP.md` §6.1 for why), and `refund_payment` (Phase 7
+remainder, T-3) are all built and covered by the dependency-free test
+suite. Not yet built: live telephony connection (the remainder of
+Phase 6), notifications (Phase 8), the admin dashboard (Phase 9), and the
 Playwright/E2E/voice test suites (Phase 10). See
 `docs/PRODUCTION_CHECKLIST.md` for the exact line-by-line status against
 the spec's 80-item "definition of done."

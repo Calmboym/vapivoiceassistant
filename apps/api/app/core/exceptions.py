@@ -98,6 +98,13 @@ _PAYMENT_PROVIDER_ERROR_HTTP_STATUS = {
     "PAYMENT_SESSION_CREATION_FAILED": status.HTTP_502_BAD_GATEWAY,
     "PAYMENT_PROVIDER_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
     "WEBHOOK_SIGNATURE_INVALID": status.HTTP_400_BAD_REQUEST,
+    # T-3: PaymentRefundError — a refund the provider explicitly
+    # rejected or could not complete (already refunded, bad
+    # PaymentIntent, amount exceeds what's left, or a terminal
+    # FAILED/CANCELED Refund.status). Falls back to the same 502 the
+    # generic dict.get default already uses, listed explicitly here for
+    # the same reason every other code in this dict is.
+    "PAYMENT_REFUND_FAILED": status.HTTP_502_BAD_GATEWAY,
 }
 
 

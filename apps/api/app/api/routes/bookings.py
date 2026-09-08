@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_airline_provider, get_idempotency_store
+from app.api.deps import get_airline_provider, get_idempotency_store, get_payment_provider
 from app.api.deps_auth import get_current_actor, require_booking_access
 from app.core.encryption import decrypt_sensitive, mask_for_speech
 from app.core.exceptions import AuthError, NotFoundError
@@ -156,7 +156,7 @@ def list_my_bookings(
 
 @router.get("/{pnr}/cancellation-policy")
 def get_cancellation_policy(pnr: str, request: Request, db: Session = Depends(get_db)):
-    service = CancellationService(db, get_airline_provider(), get_idempotency_store())
+    service = CancellationService(db, get_airline_provider(), get_idempotency_store(), get_payment_provider())
     booking, policy = service.get_policy(pnr)
     out = CancellationQuoteOut(
         pnr=booking.pnr, refundable_amount=policy.refundable_amount,
@@ -225,7 +225,7 @@ def cancel_booking(
     )
 
     call_id = request.headers.get("x-charter123-call-id")
-    service = CancellationService(db, get_airline_provider(), get_idempotency_store())
+    service = CancellationService(db, get_airline_provider(), get_idempotency_store(), get_payment_provider())
     booking, already_cancelled = service.cancel(
         body, actor=_actor_label(effective_actor, call_id), call_id=call_id, request_id=request.state.request_id
     )

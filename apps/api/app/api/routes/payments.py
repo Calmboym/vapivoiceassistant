@@ -1,5 +1,5 @@
 """
-Payment routes (Phase 6 Milestone 1).
+Payment routes (Phase 6 Milestone 1; refund route added in T-3).
 
 THIS FILE, LIKE THE REST OF app/api/routes/*.py, IS UNEXECUTED IN THIS
 SANDBOX (no FastAPI install — see repo-wide sandbox note). Written and
@@ -7,10 +7,10 @@ reviewed against the exact method signatures of every service/repository/
 security function it calls, following the same request/authorization
 pattern already executed and proven by app/api/routes/bookings.py.
 
-Two web routes (POST /sessions, GET /status/{pnr}) plus the Stripe
-webhook receiver. The Vapi voice equivalents of the first two live
-entirely in app/api/routes/vapi.py's dispatch table — both channels call
-the SAME PaymentService methods (see that module's docstring), just
+Three web routes (POST /sessions, GET /status/{pnr}, POST /refunds) plus
+the Stripe webhook receiver. The Vapi voice equivalents of the first two
+live entirely in app/api/routes/vapi.py's dispatch table — both channels
+call the SAME PaymentService methods (see that module's docstring), just
 through different authorization gates:
   - Web (this file): require_payment_access — authenticated owner or
     FINANCE/ADMIN staff, NEVER a verification token (see
@@ -21,6 +21,15 @@ through different authorization gates:
     correct before any payment backend existed. See docs/PAYMENTS.md
     "Authorization" for the full reasoning on why these are two
     deliberately different gates, not a gap.
+
+POST /refunds has NO Vapi equivalent and never will — its
+TOOL_AUTHORIZATION_MATRIX entry is STAFF_OR_ADMIN_ONLY, which
+authorize_vapi_tool_call() always denies for a VAPI_AGENT actor (see
+that function's docstring), confirmed by
+tests.test_vapi_core.ToolRegistryConsistencyTests.
+test_authorization_entries_without_a_schema_are_exactly_staff_only. Only
+a human staff/finance actor, authenticated the normal web way, can ever
+reach it.
 """
 
 from __future__ import annotations
@@ -38,7 +47,13 @@ from app.db.session import get_db
 from app.models.payment import Payment
 from app.repositories.booking_repository import BookingRepository
 from app.schemas.common import ok
-from app.schemas.payment import PaymentSessionCreateRequest, PaymentSessionOut, PaymentStatusOut
+from app.schemas.payment import (
+    PaymentSessionCreateRequest,
+    PaymentSessionOut,
+    PaymentStatusOut,
+    RefundCreateRequest,
+    RefundOut,
+)
 from app.services.payment_service import PaymentService
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
@@ -59,6 +74,19 @@ def _payment_out(payment: Payment) -> PaymentSessionOut:
         # directly; nothing here sends it anywhere on their behalf.
         checkout_url=payment.checkout_url,
         expires_at=payment.expires_at,
+    )
+
+
+def _refund_out(payment: Payment) -> RefundOut:
+    return RefundOut(
+        payment_id=str(payment.id),
+        pnr=payment.booking.pnr,
+        payment_status=payment.status,
+        booking_payment_status=payment.booking.payment_status,
+        refund_status=payment.refund_status,
+        refunded_amount=payment.refunded_amount,
+        currency=payment.currency,
+        provider_refund_id=payment.provider_refund_id,
     )
 
 
@@ -115,6 +143,30 @@ def get_payment_status(
         ),
         request.state.request_id,
     )
+
+
+@router.post("/refunds")
+def refund_payment(
+    body: RefundCreateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: CurrentActor = Depends(get_current_actor),
+):
+    booking = BookingRepository(db).get_by_pnr(body.pnr)
+    if booking is None:
+        raise NotFoundError("BOOKING_NOT_FOUND", "No booking found for that confirmation number.")
+
+    # PAYMENTS_REFUND is only ever held by FINANCE/ADMIN/SUPER_ADMIN
+    # (app/core/security/rbac.py) — a customer-owner never has it, so
+    # authorize_payment_access's staff-permission path is the only way
+    # through here, exactly as documented at that function's §14 note.
+    effective_actor = require_payment_access(
+        actor, booking=booking, required_permission=Permission.PAYMENTS_REFUND.value
+    )
+
+    service = PaymentService(db, get_payment_provider(), get_idempotency_store())
+    payment = service.refund_payment(body, actor=_actor_label(effective_actor))
+    return ok(_refund_out(payment), request.state.request_id)
 
 
 # --------------------------------------------------------------------- webhook

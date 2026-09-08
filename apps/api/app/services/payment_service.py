@@ -1,5 +1,5 @@
 """
-PaymentService (Phase 6 Milestone 1).
+PaymentService (Phase 6 Milestone 1; refund_payment added in T-3).
 
 The ONE place payment business logic lives — app/api/routes/payments.py
 (web) and app/api/routes/vapi.py's two new dispatch functions (voice)
@@ -7,7 +7,13 @@ both call the SAME methods on this class, exactly like BookingService/
 CancellationService already do for the rest of the booking lifecycle
 (see PROJECT_HANDOFF_PHASE_5's Milestone 1 spec §1/§11: "Do NOT implement
 Vapi -> Stripe directly... The same Payment Service must be reusable by
-the normal web/API layer.").
+the normal web/API layer."). refund_payment (T-3) is the one exception to
+"both channels call the same methods" — it's STAFF_OR_ADMIN_ONLY and
+never reachable via Vapi at all (see that method's own section docstring
+and app/core/security/vapi_authorization.py), so only
+app/api/routes/payments.py calls it; CancellationService calls this
+class's apply_refund_outcome() helper directly instead, for reasons that
+method's docstring explains.
 
 This service never calls authorize_*() itself — same pattern as
 BookingService/CancellationService: the caller (a route, or
@@ -52,6 +58,7 @@ be guaranteed"):
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -68,11 +75,16 @@ from app.core.payments.state_machine import (
 )
 from app.models.booking import Booking
 from app.models.payment import Payment
-from app.providers.payments.base import PaymentProvider
+from app.providers.payments.base import PaymentProvider, PaymentRefundError, RefundResult, RefundStatus
 from app.repositories.booking_repository import BookingRepository
 from app.repositories.payment_repository import PaymentRepository
-from app.schemas.payment import PaymentSessionCreateRequest
+from app.schemas.payment import PaymentSessionCreateRequest, RefundCreateRequest
 from app.services.audit_service import record_audit_event
+
+# Refund.status values that mean the provider explicitly could NOT
+# complete this refund (as opposed to PENDING/REQUIRES_ACTION, which
+# just mean "not yet resolved" — see RefundResult's docstring).
+_TERMINAL_FAILED_REFUND_STATUSES = frozenset({RefundStatus.FAILED, RefundStatus.CANCELED})
 
 
 class PaymentService:
@@ -202,6 +214,171 @@ class PaymentService:
             raise NotFoundError("BOOKING_NOT_FOUND", f"No booking found for PNR {pnr}.")
         payment = self.payments.get_latest_for_booking(booking.id)
         return booking, payment
+
+    # ------------------------------------------------------------- refund
+    #
+    # T-3 (docs/TASK_BOARD.md). Two entry points share the mutation logic
+    # below (apply_refund_outcome) without sharing a commit/rollback
+    # transaction boundary:
+    #   - refund_payment(), just below: the staff-facing REST route's
+    #     entry point (app/api/routes/payments.py POST /refunds). Owns
+    #     its own full commit/rollback/idempotency-store transaction,
+    #     exactly like create_payment_session above.
+    #   - CancellationService.cancel(): calls apply_refund_outcome()
+    #     directly (NOT this method) from inside its OWN try/except/
+    #     commit block, because a cancellation's airline-side effect
+    #     already happened and cannot be undone by rolling back this
+    #     Session — see that module's comment for the full reasoning.
+    #     Nesting two commit/rollback owners on the same shared
+    #     SQLAlchemy Session would let a failed nested rollback erase the
+    #     outer, already-true "booking was cancelled" state — this
+    #     split is what avoids that, not an oversight.
+
+    def apply_refund_outcome(
+        self,
+        *,
+        payment: Payment,
+        booking: Booking,
+        provider_result: Optional[RefundResult],
+        amount: Decimal,
+        reason: Optional[str],
+        mark_booking_refunded: bool,
+        actor: str,
+        call_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> Payment:
+        """Mutates `payment`/`booking` in place and writes ONE audit
+        event. Does NOT call self.db.commit()/rollback() or touch the
+        idempotency store — see the section docstring above for why that
+        stays the caller's job.
+
+        `provider_result=None` means "nothing was actually sent to the
+        provider" — used only by CancellationService for the case where
+        the airline's cancellation policy leaves nothing refundable (a
+        cancellation fee absorbed the full amount). The Payment is still
+        closed out honestly: refunded_amount=0, refund_status="succeeded"
+        (trivially — there was nothing to fail), rather than pretending
+        a Stripe call happened or silently doing nothing.
+
+        `mark_booking_refunded` is the CALLER's decision, not this
+        method's: CancellationService always passes True (a cancelled,
+        previously-paid booking's payment lifecycle is closed out
+        regardless of whether the refund was full or fee-adjusted — see
+        that module). refund_payment() below passes True only once the
+        CUMULATIVE refunded amount covers the full payment — a goodwill
+        partial refund on an otherwise-active booking must not flip
+        Booking.payment_status away from "PAID"."""
+        payment.refund_reason = reason
+
+        if provider_result is None:
+            payment.refunded_amount = (payment.refunded_amount or Decimal("0")) + amount
+            payment.refund_status = RefundStatus.SUCCEEDED.value
+            payment.refunded_at = datetime.now(timezone.utc)
+            audit_action = "payment.refunded"
+            audit_metadata = {
+                "pnr": booking.pnr, "amount": str(amount), "currency": payment.currency,
+                "note": "cancellation fee absorbed the full amount; no provider refund was issued",
+            }
+        else:
+            payment.provider_refund_id = provider_result.provider_refund_id
+            payment.refunded_amount = (payment.refunded_amount or Decimal("0")) + provider_result.amount
+            payment.refund_status = provider_result.status.value
+            audit_metadata = {
+                "pnr": booking.pnr, "amount": str(provider_result.amount), "currency": provider_result.currency,
+                "provider_refund_id": provider_result.provider_refund_id, "status": provider_result.status.value,
+            }
+            if provider_result.status == RefundStatus.SUCCEEDED:
+                payment.refunded_at = datetime.now(timezone.utc)
+                audit_action = "payment.refunded"
+            elif provider_result.status in _TERMINAL_FAILED_REFUND_STATUSES:
+                audit_action = "payment.refund_failed"
+            else:  # PENDING / REQUIRES_ACTION — not yet resolved, see class docstring
+                audit_action = "payment.refund_pending"
+
+        # Payment.status itself is deliberately never touched here — see
+        # app/models/payment.py's refund-tracking comment.
+        if mark_booking_refunded and (provider_result is None or provider_result.status == RefundStatus.SUCCEEDED):
+            booking.payment_status = "REFUNDED"
+
+        record_audit_event(
+            self.db, actor=actor, actor_type="ai_agent" if call_id else "system",
+            action=audit_action, resource="payment", resource_id=str(payment.id),
+            request_id=request_id, call_id=call_id, metadata=audit_metadata,
+        )
+        return payment
+
+    def refund_payment(self, request: RefundCreateRequest, *, actor: str) -> Payment:
+        if not request.confirmed:
+            raise ValidationFailedError(
+                "CONFIRMATION_REQUIRED", "Refunding a payment requires explicit staff confirmation first."
+            )
+
+        booking = self.bookings.get_by_pnr(request.pnr)
+        if booking is None:
+            raise NotFoundError("BOOKING_NOT_FOUND", f"No booking found for PNR {request.pnr}.")
+        if booking.payment_status == "REFUNDED":
+            raise ConflictError("PAYMENT_ALREADY_REFUNDED", "This booking has already been refunded.")
+
+        payment = self.payments.get_latest_for_booking(booking.id)
+        if payment is None or payment.status != "SUCCEEDED" or not payment.provider_payment_intent_id:
+            raise ValidationFailedError(
+                "PAYMENT_NOT_REFUNDABLE", "This booking has no completed payment to refund."
+            )
+
+        already_refunded = payment.refunded_amount or Decimal("0")
+        remaining = payment.amount - already_refunded
+        refund_amount = request.amount if request.amount is not None else remaining
+        if refund_amount <= 0 or refund_amount > remaining:
+            raise ValidationFailedError(
+                "INVALID_REFUND_AMOUNT",
+                f"Refund amount must be greater than 0 and no more than {remaining} {payment.currency} remaining.",
+            )
+
+        cached = self.idempotency.begin(request.idempotency_key)
+        if cached is not None:
+            if cached.status == "completed" and cached.result:
+                existing = self.payments.get_by_id(cached.result["payment_id"])
+                if existing is not None:
+                    return existing
+            if cached.status == "in_progress":
+                raise ValidationFailedError(
+                    "REFUND_IN_PROGRESS", "This refund request is already being processed."
+                )
+
+        try:
+            result = self.provider.refund_payment(
+                payment_intent_id=payment.provider_payment_intent_id,
+                amount=refund_amount,
+                currency=payment.currency,
+                idempotency_key=request.idempotency_key,
+                reason=request.reason,
+            )
+        except Exception:
+            # The provider call itself blew up (network/rejected before
+            # any result existed) — nothing to commit, same pattern as
+            # create_payment_session above.
+            self.db.rollback()
+            self.idempotency.fail(request.idempotency_key)
+            raise
+
+        will_complete_full_amount = (already_refunded + refund_amount) >= payment.amount
+        self.apply_refund_outcome(
+            payment=payment, booking=booking, provider_result=result, amount=refund_amount,
+            reason=request.reason, mark_booking_refunded=will_complete_full_amount, actor=actor,
+        )
+        # Committed BEFORE any error is raised below — even a FAILED/
+        # CANCELED provider response is a real fact worth keeping in the
+        # audit trail and on the Payment row, not something a caught
+        # exception should erase (§7: honest state, not a false "nothing
+        # happened").
+        self.db.commit()
+
+        if result.status in _TERMINAL_FAILED_REFUND_STATUSES:
+            self.idempotency.fail(request.idempotency_key)
+            raise PaymentRefundError(f"The payment provider could not complete this refund (status: {result.status.value}).")
+
+        self.idempotency.complete(request.idempotency_key, {"payment_id": str(payment.id)})
+        return payment
 
     # ------------------------------------------------------------ webhook
 

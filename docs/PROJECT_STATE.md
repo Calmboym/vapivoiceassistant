@@ -1,6 +1,6 @@
 # Charter123 — Project State
 
-**Status: CANONICAL, current as of this audit (2026-09-07).** This is a
+**Status: CANONICAL, current as of 2026-09-08 (T-3 session).** This is a
 terse, subsystem-by-subsystem snapshot for fast lookup. For narrative,
 phase history, and contradictions, see `docs/PROJECT_ROADMAP.md` — that
 file is authoritative if this one ever drifts from it.
@@ -83,19 +83,21 @@ Each row: what exists → what's verified → what isn't.
 | Tools registered but intentionally unavailable (5): `add_baggage`, `get_seat_options`, `select_seat`, `create_support_ticket`, `create_callback_request` | Registered as `implemented=False` placeholders | Genuine domain gaps, re-verified this audit by grepping for backing models — none exist |
 | Tools from spec §19 **not registered at all** (8): `update_passenger`, `get_customer`, `create_customer`, `update_customer`, `end_call`, `get_airport`, `search_airports`, `get_faq` | **Missing entirely** | New finding, this audit — see `docs/PROJECT_ROADMAP.md` §6.4 |
 
-## Payments (Phase 7, delivered under the repo's internal "Phase 6 Milestone 1" label — see roadmap §6.1)
+## Payments (Phase 7, delivered under the repo's internal "Phase 6 Milestone 1" label — see roadmap §6.1; `refund_payment` added in T-3)
 
 | Component | State | Verified |
 |---|---|---|
-| `Payment` model + state machine (5 states) | Complete | ✅ `StateMachineTests` |
-| `PaymentProvider` abstraction + `MockPaymentProvider` | Complete | ✅ full lifecycle test incl. webhook parse |
-| `StripePaymentProvider` | Written, cross-checked against live Stripe docs | Never executed — no network access in any sandbox to date, re-confirmed this audit |
-| `PaymentService` (shared by web + Vapi) | Written | Not executed (needs FastAPI/SQLAlchemy) |
-| Web routes (`/payments/sessions`, `/payments/status/{pnr}`, Stripe webhook receiver) | Written | Not executed |
+| `Payment` model + state machine (5 states) | Complete — deliberately unmodified by T-3, see next row | ✅ `StateMachineTests` |
+| `Payment` refund-tracking columns (`provider_refund_id`/`refunded_amount`/`refund_status`/`refunded_at`/`refund_reason`, migration `0005`) | Complete | Written, reviewed — needs a real Postgres to execute the migration |
+| `PaymentProvider` abstraction + `MockPaymentProvider`, incl. `refund_payment` (T-3) | Complete | ✅ full lifecycle test incl. webhook parse; ✅ 8 new refund tests (full/partial/idempotent-replay/over-refund/unpaid/unknown-intent) |
+| `StripePaymentProvider`, incl. `refund_payment` (T-3) | Written, cross-checked against live Stripe docs | Never executed — no network access in any sandbox to date, re-confirmed this session |
+| `PaymentService` (shared by web + Vapi), incl. `apply_refund_outcome`/`refund_payment` (T-3) | Written | Not executed (needs FastAPI/SQLAlchemy) |
+| Web routes (`/payments/sessions`, `/payments/status/{pnr}`, `/payments/refunds` (T-3), Stripe webhook receiver) | Written | Not executed |
 | Vapi tools `create_payment_session`/`get_payment_status` | Complete | ✅ argument mapping/confirmation-gating/no-LLM-amount tests |
-| `refund_payment` | **Not built** — reserved `STAFF_OR_ADMIN_ONLY` in the authorization matrix | Deliberately deferred |
+| `refund_payment` | **Complete (T-3)** — staff/admin-only REST route, NOT a Vapi tool by design (`STAFF_OR_ADMIN_ONLY` always denies `VAPI_AGENT`) | Written, reviewed; ✅ `test_authorization_entries_without_a_schema_are_exactly_staff_only` re-confirmed it correctly stays schema-less |
 | Payment-link delivery (email/SMS) | **Not built** | Deliberately deferred — see Phase 8, and `docs/PAYMENTS.md` §8's explicit instruction not to close this quietly |
-| Cancellation → real refund | **Not built** — `CancellationService.cancel()` flips `payment_status` to `REFUNDED` locally only | Now load-bearing since payments exist; documented inline and in `docs/PAYMENTS.md` §9 |
+| Cancellation → real refund | **Complete (T-3)** — `CancellationService.cancel()` now calls `PaymentProvider.refund_payment()` for a `PAID` booking, using the airline's fee-adjusted `refundable_amount`; a provider failure leaves `payment_status="PAID"` (not falsely `"REFUNDED"`) and is recorded for manual staff follow-up via the new refund route | Written, reviewed — needs FastAPI/SQLAlchemy to execute; see `docs/PAYMENTS.md` §9 |
+| Refund-status-change webhook (Stripe `refund.updated`/`charge.refunded`) | **Not built** | Deliberately out of T-3's scope — a `pending`/`requires_action` refund result is recorded honestly but nothing resolves it later on its own; see `docs/PAYMENTS.md` §9's last bullet and §13 |
 
 ## Notifications (Phase 8)
 
@@ -119,8 +121,8 @@ Each row: what exists → what's verified → what isn't.
 | `tests/test_core_logic.py` | 30 | ✅ passing |
 | `tests/test_security_core.py` | 93 | ✅ passing |
 | `tests/test_vapi_core.py` | 56 | ✅ passing |
-| `tests/test_payments_core.py` | 33 | ✅ passing |
-| **Total dependency-free** | **223 pass** | ✅ **re-executed and confirmed by this audit independently** (`python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api -v` → `OK (skipped=8)`) |
+| `tests/test_payments_core.py` | 46 (33 + 13 new for T-3's `refund_payment`) | ✅ passing |
+| **Total dependency-free** | **236 pass** | ✅ **re-executed and confirmed this session** (`python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api -v` → `OK (skipped=8)`) |
 | `tests/test_api_security.py` | 18 methods, 6 classes | Written against real `TestClient`; skips cleanly here (no FastAPI) |
 | `tests/test_vapi_api.py` | 2 classes | Written; skips cleanly here |
 | `tests/{e2e,integration,voice}/` | 0 | Placeholders only — `README.md` in each, no test code |

@@ -266,7 +266,7 @@ def _dispatch_get_fare_quote(args: dict, *, db: Session, actor: CurrentActor, ca
 
 
 def _dispatch_get_cancellation_policy(args: dict, *, db: Session, actor: CurrentActor, call_id: str) -> str:
-    service = CancellationService(db, get_airline_provider(), get_idempotency_store())
+    service = CancellationService(db, get_airline_provider(), get_idempotency_store(), get_payment_provider())
     booking, policy = service.get_policy(args["pnr"])
     if policy.already_cancelled:
         return f"Booking {booking.pnr} is already cancelled."
@@ -334,7 +334,7 @@ def _dispatch_modify_booking(args: dict, *, db: Session, actor: CurrentActor, ca
 
 def _dispatch_cancel_booking(args: dict, *, db: Session, actor: CurrentActor, call_id: str) -> str:
     request = BookingCancelRequest(**args)
-    service = CancellationService(db, get_airline_provider(), get_idempotency_store())
+    service = CancellationService(db, get_airline_provider(), get_idempotency_store(), get_payment_provider())
     booking, already_cancelled = service.cancel(request, actor=f"vapi_call:{call_id}", call_id=call_id)
     if already_cancelled:
         return f"Booking {booking.pnr} was already cancelled."

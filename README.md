@@ -7,15 +7,15 @@ against a fully-featured `MockAirlineProvider` with zero external aviation
 credentials, and switching to a real GDS (Amadeus/Sabre) is a config
 change, not a rewrite. See `docs/AIRLINE_PROVIDER.md`.
 
-**Current status (corrected 2026-09-07 — this line previously
-contradicted the Testing section below it): Phases 1–5 of the build are
-complete (repo/infra → DB schema & mock provider → core booking flows →
-authentication/RBAC/security → Vapi voice integration), plus Phase 7
-Milestone 1 (Stripe payment sessions — labeled "Phase 6 Milestone 1" in
-its own handoff; see `docs/PROJECT_ROADMAP.md` §6.1 for why that label
-doesn't match the original spec's numbering). Still not built: live
-telephony connection (the rest of Phase 6), payment refunds, real
-email/SMS notifications, and the admin dashboard.** See
+**Current status (corrected 2026-09-08 — T-3): Phases 1–5 of the build
+are complete (repo/infra → DB schema & mock provider → core booking
+flows → authentication/RBAC/security → Vapi voice integration), plus
+Phase 7 Milestone 1 (Stripe payment sessions — labeled "Phase 6
+Milestone 1" in its own handoff; see `docs/PROJECT_ROADMAP.md` §6.1 for
+why that label doesn't match the original spec's numbering) and
+`refund_payment` (T-3, the remainder of Phase 7). Still not built: live
+telephony connection (the rest of Phase 6), real email/SMS
+notifications, and the admin dashboard.** See
 `docs/PROJECT_ROADMAP.md` for the full reconciled status and
 `docs/PRODUCTION_CHECKLIST.md` for the exact, honest, line-by-line
 status — including which parts have been executed and verified versus
@@ -93,10 +93,11 @@ cd apps/api
 python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core -v
 ```
 
-This is **223 tests and they pass** — actually run, repeatedly, while
+This is **236 tests and they pass** — actually run, repeatedly, while
 building each phase (123 through Phase 4, +56 in Phase 5, +44 in Phase 6
-Milestone 1). Execution caught real bugs each time, not just in Phase
-1-3: a flight-ID parser that broke on ISO-date hyphens, an
+Milestone 1, +13 in T-3's `refund_payment`). Execution caught real bugs
+each time, not just in Phase 1-3: a flight-ID parser that broke on
+ISO-date hyphens, an
 unrealistic flight-duration formula, an IDOR bug in the Phase 4
 authorization logic that would have let any customer reach any other
 customer's booking, a mutable-object aliasing bug in the rate limiter, and
@@ -128,16 +129,17 @@ fallback is appropriate for production — see `docs/ARCHITECTURE.md`.
 
 ## What's next
 
-**Corrected 2026-09-07** — this section previously described the Vapi
-layer and Stripe payments as future work; both are built (see "Current
-status" above). Read `docs/PROJECT_ROADMAP.md` §7/§8 for the current,
-accurate execution plan and position; short version: get the FastAPI/
-SQLAlchemy test layer actually running somewhere with network access
-(nothing in that layer has ever been executed), then either connect a
-real phone number (the remaining piece of Phase 6), build `refund_payment`
-(the remaining piece of Phase 7), or start Phase 8 (notifications) —
-none of these three block each other. **Read `docs/SESSION_PROMPT.md`
-before starting any new session** — it replaces the old advice to read
+**Corrected 2026-09-08** — this section previously described the Vapi
+layer, Stripe payments, and `refund_payment` as future work; all three
+are now built (see "Current status" above). Read
+`docs/PROJECT_ROADMAP.md` §7/§8 for the current, accurate execution plan
+and position; short version: get the FastAPI/SQLAlchemy test layer
+actually running somewhere with network access (nothing in that layer
+has ever been executed, including T-3's refund changes), then either
+connect a real phone number (the remaining piece of Phase 6) or start
+Phase 8 (notifications) — neither blocks the other. **Read
+`docs/SESSION_PROMPT.md` before starting any new session** — it replaces
+the old advice to read
 a specific phase handoff, since which handoff is "latest" now changes
 over time.
 

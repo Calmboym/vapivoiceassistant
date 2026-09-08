@@ -31,10 +31,10 @@ Legend: ✅ done & verified in this sandbox · 🟡 written, not yet verified
 | 9 | Fare quote works | ✅ | Verified: `test_quote_total_equals_base_plus_tax_plus_fee`. |
 | 10 | Booking creation works | ✅ | Verified at the provider/logic level (`BookingLifecycleTests`). The HTTP route (`POST /api/v1/bookings`) is written but not executed. |
 | 11 | Booking lookup works | ✅ / 🟡 | Provider-level `get_booking` verified. `BookingVerificationService`'s email/phone/last-name check has no dedicated unit test yet. |
-| 12 | Cancellation works | ✅ | Verified, including idempotent double-cancel and fee-tier escalation near departure. **Known limitation, now live**: the refund-amount calculation is verified, but the actual `payment_status → REFUNDED` transition is a local field flip only — see item 56 below. |
+| 12 | Cancellation works | ✅ | Verified, including idempotent double-cancel and fee-tier escalation near departure. **Fixed in T-3**: the refund-amount calculation was already verified; the `payment_status → REFUNDED` transition now calls the real `PaymentProvider` for a paid booking (net of the cancellation fee) instead of only flipping the local field — see item 60 below and `docs/PAYMENTS.md` §9. |
 | 13 | Modification works | ✅ | Verified: `test_update_booking_rebooks_to_a_new_flight_and_recomputes_price`, `test_update_booking_is_idempotent`, `test_cannot_modify_a_cancelled_booking`. |
 | 14 | Passenger management works | ✅ | Verified: add/remove passenger recomputes price correctly; removing the last passenger is rejected. No `update_passenger` path exists yet (see item 57). |
-| 15 | Stripe test flow works | 🟡 | `create_payment_session`/`get_payment_status` implemented (model, provider abstraction, service, web routes, Vapi tools) and the dependency-free portions (state machine, mock provider, argument mapping, authorization) are ✅ verified — see `docs/PAYMENTS.md` §12 for the full per-component breakdown. `StripePaymentProvider` itself and everything requiring FastAPI/SQLAlchemy remain 🟡 unexecuted (no network access in any sandbox to date, this audit's included) — a real Stripe test-mode Checkout Session completing end-to-end has not been attempted. `refund_payment` remains ⬜ (out of this milestone's scope — see item 56). |
+| 15 | Stripe test flow works | 🟡 | `create_payment_session`/`get_payment_status`/`refund_payment` implemented (model, provider abstraction, service, web routes, Vapi tools) and the dependency-free portions (state machine, mock provider incl. refund, argument mapping, authorization) are ✅ verified — see `docs/PAYMENTS.md` §12 for the full per-component breakdown. `StripePaymentProvider` itself and everything requiring FastAPI/SQLAlchemy remain 🟡 unexecuted (no network access in any sandbox to date, this session's included) — a real Stripe test-mode Checkout Session or refund completing end-to-end has not been attempted. |
 | 16 | Vapi webhook works | ✅ / 🟡 | **Phase 5, complete as code.** `POST /api/v1/vapi/webhook` — shared-secret auth, `end-of-call-report`/`tool-calls` event handling, `Call`/`ToolExecution` persistence. Auth logic + dispatch ✅ executed (`WebhookAuthTests` etc., part of the 223 below — see item 31). The FastAPI route itself is 🟡, same constraint as every HTTP route in this table. |
 | 17 | Vapi tools work | ✅ / 🟡 | **Phase 5, complete.** 21 tool JSON schemas (`app/core/vapi/tool_schemas.py`), 23-entry authorization matrix, 16 wired to real dispatch functions, 5 correctly registered `implemented=False` placeholders for genuinely unbuilt domain features (seat selection, baggage add, support tickets, callback requests). Schema ⇄ matrix ⇄ dispatch consistency independently re-verified this audit. ✅ logic-level tests pass; HTTP execution 🟡. **This audit found 8 tools from the original spec §19 list not registered at all** (`update_passenger`, `get_customer`, `create_customer`, `update_customer`, `end_call`, `get_airport`, `search_airports`, `get_faq`) — see `docs/PROJECT_ROADMAP.md` §6.4, a new finding, not previously tracked here. |
 | 18 | Vapi Assistant can call the backend | 🟡 | The webhook/tool layer that would receive such a call is ✅ complete and tested (item 16–17). Whether a real Vapi Assistant configuration actually calls it has never been tested — no live Vapi account has been used on this project. `scripts/setup_vapi.py` (spec §51), which would create/attach the Assistant, was never written. |
@@ -108,7 +108,7 @@ uses the original spec's numbering, matching the rest of this file.
 | 57 | `PaymentProvider` abstraction + `MockPaymentProvider` | ✅ | ✅ executed, full lifecycle incl. webhook parsing. |
 | 58 | `StripePaymentProvider` | 🟡 | Written, cross-checked against live Stripe API docs; never executed — no network access in any sandbox to date. |
 | 59 | `create_payment_session`/`get_payment_status` Vapi tools | ✅ | ✅ executed — confirmation-gating, no-LLM-supplied-amount, argument mapping all tested. |
-| 60 | `refund_payment` | ⬜ | Reserved `STAFF_OR_ADMIN_ONLY` in the authorization matrix; not implemented. See item 12 — this is why a cancelled paid booking's `REFUNDED` status doesn't reflect a real refund yet. |
+| 60 | `refund_payment` | 🟡 | **Implemented, T-3** — `PaymentProvider.refund_payment()` (both providers), `PaymentService.refund_payment`/`apply_refund_outcome`, staff-only `POST /api/v1/payments/refunds`, and `CancellationService.cancel()` wired to call it. Dependency-free portions (mock provider, error types) ✅ executed — 8 new refund tests. Everything needing FastAPI/SQLAlchemy/`stripe` is 🟡 written, unexecuted (same sandbox constraint as the rest of this table). |
 | 61 | Payment-link delivery to a phone caller | ⬜ | No email/SMS provider exists (Phase 8) to deliver the Stripe Checkout URL to a caller who can't access a computer mid-call — explicitly flagged as a known limitation in `docs/PAYMENTS.md` §8, not silently deferred. |
 
 ## What this means practically
@@ -127,8 +127,10 @@ the exact sequence.
 ## Explicitly out of scope in this delivery (not started at all)
 
 Updated 2026-09-07 — Vapi implementation is no longer in this list (see
-Phase 5 section above; it's done). Remaining, from the original spec:
-`refund_payment` (§17 — item 60 above), email/SMS notifications (§44 —
+Phase 5 section above; it's done). Updated 2026-09-08 (T-3) —
+`refund_payment` is no longer in this list either (see Phase 7 section
+above; it's implemented, unexecuted pending T-1). Remaining, from the
+original spec: email/SMS notifications (§44 —
 `MockEmailProvider` exists, a real provider doesn't), callback requests
 (§45), the FAQ/knowledge base (§46), private charter quoting (§47–48),
 the admin dashboard (§32–34 — the backend authorization boundary exists;

@@ -134,10 +134,10 @@ Distinguishing originally-planned vs. actual:
 | 4 | Authentication, RBAC, audit logging, rate limiting, security | 🟢 **Complete, core logic executed; HTTP layer written, unexecuted** | 93 dependency-free tests (`test_security_core.py`) actually pass (re-run this audit: confirmed); `tests/test_api_security.py` (6 classes, 18 methods) written against real FastAPI `TestClient`, skips cleanly here | Install FastAPI/SQLAlchemy/pytest in a networked environment and run `test_api_security.py` for real — the single highest-leverage unblocked action for the whole project (blocks verifying Phases 4 through 7's HTTP layers all at once) |
 | 5 | Vapi integration: webhook, tools, assistant config, voice system prompt | 🟢 **Complete as code; live-call behavior unverified** | `app/api/routes/vapi.py`, `app/core/vapi/*`, `app/core/security/vapi_{authorization,webhook_auth}.py`; 56 dependency-free tests pass; tool-schema ⇄ authorization-matrix ⇄ dispatch-table consistency independently re-verified this audit (21 schemas, 23 matrix entries, 16 wired dispatch functions — see §6.4 for tools present in spec §19 but absent here) | Live Vapi account + real phone call; `transfer_to_human`'s native `transferCall` companion tool has never been configured; `scripts/setup_vapi.py` (spec §51) was never written — see §9 |
 | 6 | Phone integration: inbound call, voice booking/lookup/cancellation, human transfer | 🟡 **PARTIAL — and the repo's own phase labels do not match this row; read §6.1 before trusting any doc that says "Phase 6" without qualification** | The *logic* for voice booking/lookup/cancellation/human-transfer-logging is the same code delivered under "Phase 5" above (`create_booking`/`get_booking`/`cancel_booking`/`modify_booking`/`transfer_to_human` Vapi tools). What has **not** happened: a real phone number connected to a real Vapi assistant, a real inbound call ever reaching it, or `scripts/setup_vapi.py` being written at all | Live phone number + inbound call test (Master Build Prompt §79 items 19–25); `scripts/setup_vapi.py`; native `transferCall` tool configuration |
-| 7 | Payments: Stripe, webhooks, booking/payment consistency | 🟡 **PARTIAL — delivered under the repo's own "Phase 6 Milestone 1" label; see §6.1** | `create_payment_session`/`get_payment_status` implemented, code-reviewed, and (for the dependency-free portions) executed — 44 tests; `StripePaymentProvider` written and cross-checked against live Stripe docs but never executed (no network in any sandbox to date) | `refund_payment` (reserved, staff-only, not built); a real Stripe test-mode Checkout Session completing end-to-end; out-of-band delivery of the payment link (no email/SMS provider exists — see Phase 8) |
+| 7 | Payments: Stripe, webhooks, booking/payment consistency | 🟡 **PARTIAL — delivered under the repo's own "Phase 6 Milestone 1" label; see §6.1. `refund_payment` (T-3) closed one of the two gaps this row used to list** | `create_payment_session`/`get_payment_status`/`refund_payment` implemented, code-reviewed, and (for the dependency-free portions) executed — 46 tests in `test_payments_core.py`; `CancellationService.cancel()` now calls the real provider for a paid cancellation (`docs/PAYMENTS.md` §9); `StripePaymentProvider` (incl. `refund_payment`) written and cross-checked against live Stripe docs but never executed (no network in any sandbox to date) | A real Stripe test-mode Checkout Session AND a real test-mode refund completing end-to-end; a `refund.updated`/`charge.refunded` webhook subscription (a non-instant refund's `pending`/`requires_action` status never auto-resolves — scoped out of T-3 on purpose); out-of-band delivery of the payment link (no email/SMS provider exists — see Phase 8) |
 | 8 | Notifications: email, SMS | 🔴 **NOT IMPLEMENTED** | Only `app/services/email_provider.py::MockEmailProvider` exists (not a real delivery mechanism); no SMS provider anywhere in the codebase; `RESEND_API_KEY`/`TWILIO_*` are defined in `Settings` and `.env.example` but nothing reads them | Build a real email provider (Resend or SMTP) and an SMS provider (Twilio), wire booking-confirmation and payment-link delivery to them |
 | 9 | Admin dashboard | 🔴 **NOT IMPLEMENTED** | No `/api/v1/admin`, `/api/v1/customers`, or `/api/v1/calls` routes exist (confirmed by reading every route file and `main.py`'s router registration); no admin pages in `apps/web`; only the backend RBAC boundary (`ADMIN`/`SUPER_ADMIN` roles, `admin.*` permissions) and `bootstrap_admin.py` exist | Everything — API routes to read `Call`/`ToolExecution`/`Booking`/`Payment` data for staff, and the Next.js admin UI itself |
-| 10 | Testing & production hardening | 🟡 **PARTIAL** | **223/223 dependency-free tests pass — re-executed and confirmed by this audit, independently of any prior claim.** `tests/test_api_security.py` and `tests/test_vapi_api.py` are written (8 skips, confirmed) but have never run against real FastAPI. `tests/{e2e,integration,voice}/` contain only `README.md` placeholders — no Playwright, no real-DB integration tests, no voice conversation test suite (spec §56) exist yet | Install the full stack and run the FastAPI-level suites for real; write the Playwright E2E suite (needs real booking pages in `apps/web` first — those don't exist either, see Phase 9); write the voice conversation test suite from spec §56 |
+| 10 | Testing & production hardening | 🟡 **PARTIAL** | **236/236 dependency-free tests pass — re-executed and confirmed this session (2026-09-08, T-3: +13 over the prior 223, all in `test_payments_core.py` for `refund_payment`).** `tests/test_api_security.py` and `tests/test_vapi_api.py` are written (8 skips, confirmed) but have never run against real FastAPI. `tests/{e2e,integration,voice}/` contain only `README.md` placeholders — no Playwright, no real-DB integration tests, no voice conversation test suite (spec §56) exist yet | Install the full stack and run the FastAPI-level suites for real; write the Playwright E2E suite (needs real booking pages in `apps/web` first — those don't exist either, see Phase 9); write the voice conversation test suite from spec §56 |
 
 Legend matches the audit brief: 🟢 COMPLETE · 🟡 PARTIAL · 🔴 NOT
 IMPLEMENTED · ⚠️ DEFECTIVE · 🔵 DEFERRED BY DECISION · ⚪ NOT VERIFIABLE.
@@ -392,38 +392,50 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
 
 **Read this section first if you are a new session picking this up.**
 
-- **Last completed work:** Phase 7 Milestone 1 (Payments — Stripe
-  Checkout Sessions: `create_payment_session`, `get_payment_status`),
-  labeled "Phase 6 Milestone 1" in its own handoff — see §6.1 for why
-  that label doesn't match the original spec's numbering. 223/223
-  dependency-free tests pass (re-verified by this audit independently).
+- **Last completed work:** T-3 (Phase 7 remainder — `refund_payment`,
+  2026-09-08): `PaymentProvider.refund_payment()` implemented in both
+  `MockPaymentProvider` and `StripePaymentProvider`; `CancellationService.
+  cancel()` now actually calls it for a paid cancellation instead of only
+  flipping `payment_status` locally (see risk (2) below — **closed**,
+  moved out of this list); a new staff-only `POST /api/v1/payments/
+  refunds` route for a manual/goodwill refund independent of
+  cancellation. See `docs/handoffs/2026-09-08-t3-refund-payment.md` and
+  `docs/PAYMENTS.md` §9 for the full design. 236/236 dependency-free
+  tests pass (13 new, all in `test_payments_core.py` — re-executed and
+  confirmed this session).
+- **Before that:** Phase 7 Milestone 1 (Payments — Stripe Checkout
+  Sessions: `create_payment_session`, `get_payment_status`), labeled
+  "Phase 6 Milestone 1" in its own handoff — see §6.1 for why that label
+  doesn't match the original spec's numbering.
 - **Current authorized work:** T-1 (install & execute the FastAPI/
-  SQLAlchemy test layer for real) — authorized by the project owner,
-  2026-09-07, same day as this audit. Attempted immediately: still
-  **BLOCKED** on network access to a package index — this sandbox's
-  egress proxy returns `403 host_not_allowed` for `pypi.org`, no `docker`
-  binary is present, and no offline wheel cache exists. Identical to
-  every prior sandbox since Phase 4; not a new finding. See
-  `docs/TASK_BOARD.md`'s T-1 entry for the full attempt log. The
-  dependency-free suite was re-verified in the same attempt: 223/223
-  pass, skipped=8, unchanged from this audit's own count.
+  SQLAlchemy test layer for real) remains authorized and still
+  **BLOCKED** — re-confirmed again this session (`python3 -c "import
+  fastapi"` / `sqlalchemy` / `stripe` all raise `ModuleNotFoundError`;
+  network still disabled in this sandbox). Identical to every prior
+  sandbox since Phase 4; not a new finding. See `docs/TASK_BOARD.md`'s
+  T-1 entry for the full attempt log.
 - **Next work (candidates, not yet chosen):** Step 1 (get the full stack
   installed and run the HTTP-level test suites for real) is the
   recommended first move regardless of which feature comes next, because
   every remaining phase's HTTP layer is equally unverified and this is
   the cheapest way to convert "written, reviewed" into "known to work" or
-  "found a real bug" across all of them at once.
+  "found a real bug" across all of them at once — this now includes
+  T-3's `refund_payment` route/service/CancellationService changes too.
 - **Blocked work:** anything requiring network access this build
   environment doesn't have (installing FastAPI/SQLAlchemy/`stripe`,
   `docker compose up`, a live Vapi account, a live Stripe test-mode
-  account) — confirmed still blocked in this audit's own sandbox too
-  (`pip install fastapi` fails here exactly as it has since Phase 4).
+  account) — confirmed still blocked this session too (`pip install
+  fastapi` fails here exactly as it has since Phase 4).
 - **Important known risks:** (1) the Phase 6/7 numbering question in
   §6.1 is unresolved and should be decided explicitly rather than left
-  ambiguous going forward; (2) `CancellationService.cancel()` flips
-  `payment_status` to `REFUNDED` without ever calling `PaymentProvider` —
-  this was harmless dead code before payments existed and is **live now**
-  (docs/PAYMENTS.md §9); (3) the audit-log actor-spoofing gap in §6.6.
+  ambiguous going forward; (2) ~~`CancellationService.cancel()` flips
+  `payment_status` to `REFUNDED` without ever calling `PaymentProvider`~~
+  — **fixed in T-3** (docs/PAYMENTS.md §9); a related, narrower gap
+  remains in its place: no webhook subscription for Stripe's
+  `refund.updated`/`charge.refunded` events, so a non-instant
+  (`pending`/`requires_action`) refund never auto-resolves on its own —
+  deliberately out of T-3's scope, see `docs/PAYMENTS.md` §9's last
+  bullet; (3) the audit-log actor-spoofing gap in §6.6.
 
 ## 9. Known gaps and risks
 

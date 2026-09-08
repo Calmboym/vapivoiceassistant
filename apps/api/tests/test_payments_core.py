@@ -1,6 +1,9 @@
 """
 Phase 6 Milestone 1 dependency-free tests for app/core/payments/*.py and
-app/providers/payments/{base,mock}.py.
+app/providers/payments/{base,mock}.py. Extended in T-3 for
+refund_payment (PaymentProvider.refund_payment / MockPaymentProvider /
+RefundResult / RefundStatus / PaymentRefundError) — still dependency-free
+for the same reason.
 
 Runs the same way as tests/test_core_logic.py, tests/test_security_core.py,
 and tests/test_vapi_core.py:
@@ -8,12 +11,16 @@ and tests/test_vapi_core.py:
     python3 -m unittest tests.test_payments_core -v
 
 No FastAPI/SQLAlchemy/Pydantic/`stripe` import anywhere in this file —
-that's the point. app/services/payment_service.py (which DOES need
-SQLAlchemy) is NOT tested here for the same reason
-app/services/booking_service.py and cancellation_service.py aren't
+that's the point. app/services/payment_service.py and
+app/services/cancellation_service.py (which DO need SQLAlchemy) are NOT
+tested here for the same reason app/services/booking_service.py isn't
 tested in this suite either — see this milestone's handoff note,
 "Testing status," for the honest accounting of what is and isn't
-actually executed.
+actually executed. Note in particular: app/core/payments/state_machine.py
+itself was deliberately NOT modified by T-3 (Payment.status never becomes
+"REFUNDED" — see app/models/payment.py's refund-tracking comment) so
+every StateMachineTests assertion below is unchanged and still exercises
+exactly what it did before this session.
 """
 
 from __future__ import annotations
@@ -34,8 +41,11 @@ from app.core.payments.state_machine import (
 from app.providers.payments.base import (
     CheckoutSessionStatus,
     PaymentProviderError,
+    PaymentRefundError,
     PaymentSessionCreationError,
     PaymentSessionNotFoundError,
+    RefundResult,
+    RefundStatus,
     WebhookVerificationError,
 )
 from app.providers.payments.mock import MOCK_VALID_SIGNATURE, MockPaymentProvider
@@ -140,6 +150,52 @@ class PaymentProviderErrorTests(unittest.TestCase):
     def test_all_payment_errors_are_payment_provider_errors(self):
         for exc in (WebhookVerificationError(), PaymentSessionCreationError(), PaymentSessionNotFoundError("x")):
             self.assertIsInstance(exc, PaymentProviderError)
+
+    def test_refund_error_is_not_retryable(self):
+        # T-3: every documented rejection cause (already refunded,
+        # unknown PaymentIntent, amount exceeds what's left, a terminal
+        # FAILED/CANCELED Refund.status) is a fact about the request,
+        # not a transient outage — see PaymentRefundError's docstring.
+        exc = PaymentRefundError()
+        self.assertFalse(exc.retryable)
+        self.assertEqual(exc.code, "PAYMENT_REFUND_FAILED")
+        self.assertIsInstance(exc, PaymentProviderError)
+
+    def test_refund_error_carries_its_own_detail_message(self):
+        exc = PaymentRefundError("amount exceeds the 0.00 USD remaining on this payment")
+        self.assertIn("remaining", exc.message)
+
+
+# ---------------------------------------------------------------------------
+# RefundResult / RefundStatus (T-3)
+# ---------------------------------------------------------------------------
+
+
+class RefundResultTests(unittest.TestCase):
+    def test_refund_status_matches_stripes_own_vocabulary_exactly(self):
+        # docs.stripe.com/api/refunds/object (fetched this session):
+        # "pending, requires_action, succeeded, failed, or canceled" —
+        # pinned here so a future edit can't silently drift from what
+        # Stripe's Refund.status actually returns.
+        self.assertEqual(
+            {s.value for s in RefundStatus},
+            {"pending", "requires_action", "succeeded", "failed", "canceled"},
+        )
+
+    def test_refund_result_is_immutable(self):
+        result = RefundResult(
+            provider_refund_id="re_123", status=RefundStatus.SUCCEEDED, amount=Decimal("50.00"), currency="USD"
+        )
+        with self.assertRaises(Exception):
+            result.amount = Decimal("999.00")  # frozen dataclass — must reject mutation
+
+    def test_two_results_with_same_fields_are_equal(self):
+        # frozen dataclass equality — PaymentService.refund_payment's
+        # idempotent-replay path (via the provider, not the DB) depends
+        # on this holding for the mock provider's dedup check.
+        a = RefundResult(provider_refund_id="re_1", status=RefundStatus.PENDING, amount=Decimal("1.00"), currency="EUR")
+        b = RefundResult(provider_refund_id="re_1", status=RefundStatus.PENDING, amount=Decimal("1.00"), currency="EUR")
+        self.assertEqual(a, b)
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +327,102 @@ class MockPaymentProviderTests(unittest.TestCase):
         self.assertEqual(new_status, "SUCCEEDED")
         self.assertTrue(can_transition("PENDING", new_status))
         self.assertEqual(BOOKING_PAYMENT_STATUS_FOR_SESSION[new_status], "PAID")
+
+
+# ---------------------------------------------------------------------------
+# MockPaymentProvider.refund_payment (T-3)
+# ---------------------------------------------------------------------------
+
+
+class MockPaymentProviderRefundTests(unittest.TestCase):
+    def setUp(self):
+        self.provider = MockPaymentProvider()
+
+    def _create_and_pay(self, reference="ABC123", amount=Decimal("500.00"), currency="USD",
+                         idempotency_key="sess_key_1", payment_intent_id="pi_test_1", paid=True):
+        session = self.provider.create_checkout_session(
+            reference=reference, amount=amount, currency=currency, idempotency_key=idempotency_key,
+            success_url="https://example.com/success", cancel_url="https://example.com/cancel", metadata={},
+        )
+        self.provider.simulate_completion(session.provider_session_id, paid=paid, payment_intent_id=payment_intent_id)
+        return session
+
+    def test_full_refund_succeeds(self):
+        self._create_and_pay(amount=Decimal("500.00"))
+        result = self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("500.00"), currency="USD", idempotency_key="refund_1"
+        )
+        self.assertEqual(result.status, RefundStatus.SUCCEEDED)
+        self.assertEqual(result.amount, Decimal("500.00"))
+        self.assertTrue(result.provider_refund_id.startswith("mock_re_"))
+
+    def test_refund_is_idempotent_on_replay(self):
+        self._create_and_pay(amount=Decimal("500.00"))
+        first = self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("500.00"), currency="USD", idempotency_key="refund_dup"
+        )
+        second = self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("500.00"), currency="USD", idempotency_key="refund_dup"
+        )
+        self.assertEqual(first, second)
+
+    def test_refund_unknown_payment_intent_raises(self):
+        with self.assertRaises(PaymentRefundError):
+            self.provider.refund_payment(
+                payment_intent_id="pi_does_not_exist", amount=Decimal("10.00"), currency="USD",
+                idempotency_key="refund_unknown",
+            )
+
+    def test_refund_unpaid_session_raises(self):
+        # A session with a PaymentIntent attached but paid=False — the
+        # "we know about it, it just never captured" case, distinct from
+        # an unrecognized payment_intent_id entirely.
+        self._create_and_pay(idempotency_key="sess_unpaid", payment_intent_id="pi_unpaid_1", paid=False)
+        with self.assertRaises(PaymentRefundError):
+            self.provider.refund_payment(
+                payment_intent_id="pi_unpaid_1", amount=Decimal("10.00"), currency="USD",
+                idempotency_key="refund_unpaid",
+            )
+
+    def test_refund_amount_exceeding_remaining_raises(self):
+        self._create_and_pay(amount=Decimal("100.00"))
+        with self.assertRaises(PaymentRefundError):
+            self.provider.refund_payment(
+                payment_intent_id="pi_test_1", amount=Decimal("100.01"), currency="USD",
+                idempotency_key="refund_over",
+            )
+
+    def test_two_partial_refunds_that_exactly_cover_the_amount_both_succeed(self):
+        self._create_and_pay(amount=Decimal("200.00"))
+        first = self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("80.00"), currency="USD", idempotency_key="refund_p1"
+        )
+        second = self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("120.00"), currency="USD", idempotency_key="refund_p2"
+        )
+        self.assertEqual(first.amount, Decimal("80.00"))
+        self.assertEqual(second.amount, Decimal("120.00"))
+
+    def test_partial_refunds_cannot_cumulatively_exceed_the_amount(self):
+        self._create_and_pay(amount=Decimal("200.00"))
+        self.provider.refund_payment(
+            payment_intent_id="pi_test_1", amount=Decimal("150.00"), currency="USD", idempotency_key="refund_q1"
+        )
+        with self.assertRaises(PaymentRefundError):
+            self.provider.refund_payment(
+                payment_intent_id="pi_test_1", amount=Decimal("50.01"), currency="USD", idempotency_key="refund_q2"
+            )
+
+    def test_refund_looks_up_by_payment_intent_id_not_session_id(self):
+        # Deliberately confirms the lookup key — a real refund acts on
+        # the PaymentIntent, never the Checkout Session id (see
+        # PaymentProvider.refund_payment's docstring).
+        session = self._create_and_pay(payment_intent_id="pi_lookup_check")
+        with self.assertRaises(PaymentRefundError):
+            self.provider.refund_payment(
+                payment_intent_id=session.provider_session_id,  # wrong id on purpose
+                amount=Decimal("1.00"), currency="USD", idempotency_key="refund_wrong_id",
+            )
 
 
 if __name__ == "__main__":

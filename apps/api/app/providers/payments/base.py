@@ -69,6 +69,41 @@ class PaymentStatusResult:
     currency: str
 
 
+class RefundStatus(str, Enum):
+    """Stripe's own Refund.status vocabulary, verbatim and lowercase
+    (per the Refunds API reference: "pending, requires_action, succeeded,
+    failed, or canceled") — deliberately NOT uppercased to match
+    CheckoutSessionStatus's style, so a value round-tripped from a real
+    Stripe response never needs translation. This is a genuinely
+    different axis from Payment.status/PAYMENT_SESSION_STATUSES (see
+    app/core/payments/state_machine.py): a refund's status describes the
+    refund attempt itself, not the Checkout Session, which stays
+    SUCCEEDED forever once paid — see app/models/payment.py's refund_*
+    columns docstring for why Payment.status is never mutated by a
+    refund."""
+    PENDING = "pending"
+    REQUIRES_ACTION = "requires_action"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+@dataclass(frozen=True)
+class RefundResult:
+    """What refund_payment() returns immediately after asking the
+    provider to refund a previously-captured payment — mirrors
+    CheckoutSession's role for creation. This project has no webhook
+    subscription for refund-status-change events (docs/TASK_BOARD.md
+    T-3's stated NOT-in-scope) — PaymentService therefore only ever
+    trusts this immediate synchronous response. A non-terminal status
+    (PENDING/REQUIRES_ACTION) is recorded honestly as such; the booking
+    is not marked refunded until a SUCCEEDED result is actually seen."""
+    provider_refund_id: str
+    status: RefundStatus
+    amount: Decimal
+    currency: str
+
+
 @dataclass(frozen=True)
 class WebhookEvent:
     """A provider-agnostic shape for the one event type PaymentService
@@ -114,6 +149,20 @@ class PaymentProviderUnavailableError(PaymentProviderError):
         super().__init__("PAYMENT_PROVIDER_UNAVAILABLE", detail, retryable=True)
 
 
+class PaymentRefundError(PaymentProviderError):
+    """A refund attempt that the provider explicitly rejected or could
+    not complete: already fully refunded, an unknown/mismatched
+    PaymentIntent, an amount exceeding what's left on the charge, or a
+    terminal FAILED/CANCELED Refund.status. Mirrors
+    PaymentSessionCreationError's role for creation — retryable=False
+    because every one of those causes is a fact about the payment/
+    request, not a transient outage (see PaymentProviderUnavailableError
+    for that case instead, used for a generic stripe.StripeError)."""
+
+    def __init__(self, detail: str = "could not process this refund"):
+        super().__init__("PAYMENT_REFUND_FAILED", detail, retryable=False)
+
+
 class WebhookVerificationError(PaymentProviderError):
     """Raised for ANY signature failure — missing header, wrong secret,
     malformed payload, expired timestamp. §9: "Never accept a payment-
@@ -151,3 +200,24 @@ class PaymentProvider(ABC):
 
     @abstractmethod
     def verify_and_parse_webhook(self, payload: bytes, signature_header: Optional[str]) -> WebhookEvent: ...
+
+    @abstractmethod
+    def refund_payment(
+        self,
+        *,
+        payment_intent_id: str,
+        amount: Decimal,
+        currency: str,
+        idempotency_key: str,
+        reason: Optional[str] = None,
+    ) -> RefundResult:
+        """Refund (fully or partially) a payment that already succeeded.
+        Acts on the PaymentIntent, not the Checkout Session (see
+        app/models/payment.py::provider_payment_intent_id's docstring —
+        this was anticipated since Milestone 1). `amount` is always
+        caller-computed and validated BEFORE this is called (never a
+        client/LLM-supplied value reaching here unchecked — MASTER_RULES
+        §5's principle, applied to refunds too) — see PaymentService.
+        refund_payment and CancellationService.cancel for the two
+        callers and how each computes it."""
+        ...

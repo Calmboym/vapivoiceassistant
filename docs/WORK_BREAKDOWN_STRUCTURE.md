@@ -75,28 +75,45 @@ denied that should be allowed, fix the matrix deliberately and re-run
 Corresponds to: original Master Build Prompt Phase 7, remainder after
 Milestone 1 (`docs/handoffs/2026-09-06-phase6-milestone1-payments.md`).
 
-3.1. Implement `refund_payment` (already reserved `STAFF_OR_ADMIN_ONLY`
-     in `TOOL_AUTHORIZATION_MATRIX` — do not add a new permission string
-     without checking `rbac.py` first; `payments.refund` already exists).
-3.2. Fix `CancellationService.cancel()` (see inline comment + `docs/
-     PAYMENTS.md` §9) to actually call `PaymentProvider`/`refund_payment`
-     logic when flipping a `PAID` booking to `REFUNDED`, instead of only
-     updating the local field.
+**Status: 3.1 and 3.2 DONE (T-3, 2026-09-08 — see
+`docs/handoffs/2026-09-08-t3-refund-payment.md`). 3.3 and 3.4 remain,
+both blocked on the same network-access constraint as WBS-1.**
+
+3.1. ~~Implement `refund_payment`~~ **DONE** — `PaymentProvider.
+     refund_payment()` (both providers), `PaymentService.refund_payment`/
+     `apply_refund_outcome`, staff-only `POST /api/v1/payments/refunds`.
+     Confirmed it correctly stayed OUT of `TOOL_AUTHORIZATION_MATRIX`'s
+     Vapi-schema surface (`STAFF_OR_ADMIN_ONLY` always denies a
+     `VAPI_AGENT` actor) — no new permission string was added; reused
+     the pre-existing `payments.refund`/`PAYMENTS_REFUND`.
+3.2. ~~Fix `CancellationService.cancel()`~~ **DONE** — it now calls
+     `PaymentProvider.refund_payment()` directly for a `PAID` booking
+     (see `docs/PAYMENTS.md` §9 for the full design, including how a
+     provider-side failure is handled without rolling back the
+     already-happened airline cancellation).
 3.3. A real Stripe test-mode Checkout Session, completed end-to-end,
      with a real webhook delivery via `stripe listen` or a configured
-     endpoint (needs WBS-1's network access).
+     endpoint (needs WBS-1's network access) — now also needs a real
+     test-mode **refund** completed end-to-end, added by T-3.
 3.4. PCI-relevant configuration review in the Stripe Dashboard (domain,
      branding, webhook endpoint) — human task, not code.
 
-**NOT in scope for 3.1–3.2:** payment-link delivery — that's WBS-4.
+**NOT in scope for 3.1–3.2 (still not in scope — nothing below was
+touched by T-3):** payment-link delivery (WBS-4); a `refund.updated`/
+`charge.refunded` webhook subscription (a non-instant refund's
+`pending`/`requires_action` status is recorded but never auto-resolves —
+see `docs/PAYMENTS.md` §9's last bullet and §13).
 
 **Dependencies:** WBS-1 (network access); a Stripe test-mode account.
 
-**Exit criteria:** a staff/admin actor can refund a payment through the
-same two-gate authorization pattern (`authorize_payment_access`/
-`REQUIRES_VERIFIED_BOOKING`) documented in `docs/PAYMENTS.md` §6; a
-cancelled, previously-paid booking triggers a real refund, not just a
-local status flip.
+**Exit criteria:** ~~a staff/admin actor can refund a payment through
+the same two-gate authorization pattern~~ — **met for 3.1/3.2**: a
+staff/admin actor can refund a payment (`POST /api/v1/payments/refunds`,
+gated by `authorize_payment_access`); a cancelled, previously-paid
+booking triggers a real refund via `PaymentProvider`, not just a local
+status flip. Written and reviewed, not yet executed (needs WBS-1) — see
+the handoff for the exact "Verified locally" vs. "Written, not executed"
+breakdown. 3.3/3.4 remain open.
 
 ---
 

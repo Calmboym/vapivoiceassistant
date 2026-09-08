@@ -163,6 +163,108 @@ dependency).
   `python -m app.db.seed`, and update `docs/PROJECT_STATE.md`'s
   "Verified" columns for whatever that closes).
 
+### T-3 — Phase 7 remainder: `refund_payment`
+- **Status:** AUTHORIZED — implementation done this session; execution
+  status is split (see below), same T-1 sandbox constraint as every
+  other `apps/api/app/services/*.py` / `app/api/routes/*.py` file.
+- **Scope:** Implement the reserved, `STAFF_OR_ADMIN_ONLY` `refund_payment`
+  route against `PaymentProvider` (staff/finance-only REST endpoint —
+  confirmed NOT a Vapi tool, since `STAFF_OR_ADMIN_ONLY` always denies a
+  `VAPI_AGENT` actor and `test_authorization_entries_without_a_schema_
+  are_exactly_staff_only` already pins this), and fix `CancellationService.
+  cancel()`'s local-only `REFUNDED` flip (see `docs/PAYMENTS.md` §9) to
+  actually call it when a paid booking is cancelled.
+- **NOT in scope:** payment-link delivery (T-5), telephony (T-4), a
+  refund-status-change webhook subscription (Stripe's `refund.updated`/
+  `charge.refunded` events — this milestone only trusts the synchronous
+  response from `POST /v1/refunds`; a refund that comes back `pending`/
+  `requires_action` is recorded as such, not resolved later — see
+  `docs/PAYMENTS.md` "Known limitations," new entry).
+- **Depends on:** T-1 recommended first; a Stripe test-mode account for
+  end-to-end verification. Neither available in this sandbox — see
+  Testing status below.
+- **Authorized by:** project owner, 2026-09-08 (this session).
+- **What was built:**
+  - `PaymentProvider.refund_payment()` (new abstract method) +
+    `RefundResult`/`RefundStatus` + `PaymentRefundError`, implemented in
+    both `MockPaymentProvider` (deterministic, dependency-free) and
+    `StripePaymentProvider` (real `stripe.Refund.create`, cross-checked
+    against Stripe's current Refunds API reference — fetched this
+    session, not assumed from training data).
+  - `Payment` model gained `provider_refund_id`/`refunded_amount`/
+    `refund_status`/`refunded_at`/`refund_reason` (migration `0005`).
+    Deliberately did NOT touch `app/core/payments/state_machine.py`'s
+    session-status vocabulary (`Payment.status` never becomes
+    `"REFUNDED"` — it stays `SUCCEEDED` forever once paid) — the refund
+    lifecycle is orthogonal, tracked in the new columns only. This keeps
+    `test_booking_payment_status_mapping_never_produces_refunded` (and
+    every other `StateMachineTests` assertion) true without modification;
+    `Booking.payment_status` (a plain string field, not state-machine-
+    governed) is what still flips to the pre-existing `"REFUNDED"` value.
+  - `PaymentService.apply_refund_outcome()` (shared, non-committing —
+    mutates `Payment`/`Booking` fields + writes the audit row only) and
+    `PaymentService.refund_payment()` (staff-facing, owns its own
+    commit/rollback + idempotency-store transaction, mirrors
+    `create_payment_session` exactly). A partial refund only flips
+    `Booking.payment_status` to `"REFUNDED"` once the FULL remaining
+    amount has been returned; a goodwill partial refund on an active
+    booking leaves it `"PAID"`.
+  - `CancellationService.cancel()` now takes a 4th constructor arg
+    (`payment_provider: PaymentProvider`) and, for a PAID booking, calls
+    the provider directly (via the same `apply_refund_outcome` helper,
+    but WITHOUT calling `PaymentService.refund_payment()`'s own commit/
+    rollback — both must not nest on the same `Session`, see that
+    module's new comment) using the airline's `CancellationResult.
+    refundable_amount` (net of `cancellation_fee`) — not `Payment.amount`
+    outright. Always sets `Booking.payment_status = "REFUNDED"` on a
+    successful paid cancellation (full OR fee-adjusted — matches the
+    pre-existing intent this "known limitation" comment already
+    described, now backed by a real provider call). If the provider call
+    itself fails, the airline cancellation is NOT rolled back (it already
+    happened and can't be undone locally) — `Booking.payment_status`
+    stays `"PAID"` (never falsely `"REFUNDED"`) and an audit event
+    (`payment.refund_failed_during_cancellation`) records it; the new
+    staff `refund_payment` route is the manual recovery path for exactly
+    this case.
+  - `POST /api/v1/payments/refunds` (`app/api/routes/payments.py`) —
+    `require_payment_access(..., required_permission=Permission.
+    PAYMENTS_REFUND.value)`, identical gate shape to the existing two
+    payment routes; `RefundCreateRequest` requires an explicit
+    `confirmed: True` (mirrors `customer_confirmed` on the other payment/
+    booking mutations — MASTER_RULES §3's explicit-confirmation pattern,
+    extended here since a staff-initiated refund is exactly the kind of
+    "mutation with real consequences" that pattern exists for, even
+    though `refund_payment` isn't one of §3's literally-enumerated Vapi
+    tool names).
+  - All 4 `CancellationService(...)` call sites updated
+    (`app/api/routes/bookings.py` x2, `app/api/routes/vapi.py` x2) to
+    pass `get_payment_provider()`.
+  - `_PAYMENT_PROVIDER_ERROR_HTTP_STATUS["PAYMENT_REFUND_FAILED"] = 502`
+    added to `app/core/exceptions.py`.
+- **Testing status (§7 — stated exactly, not rounded up):**
+  - **Verified locally:** the new `state_machine.py`-adjacent and
+    provider-layer logic — 12 new tests in `tests/test_payments_core.py`
+    (`RefundResult`/`RefundStatus`/`PaymentRefundError` shape,
+    `MockPaymentProvider.refund_payment` full/partial/idempotent-replay/
+    over-refund/unpaid-session/unknown-payment-intent cases). Full
+    dependency-free suite re-run after the change — see the handoff for
+    the exact command and count.
+  - **Written, reviewed, not executed:** `app/models/payment.py`'s new
+    columns, migration `0005`, `PaymentService.apply_refund_outcome`/
+    `refund_payment`, `CancellationService.cancel()`'s new branch, the
+    `POST /refunds` route, and `StripePaymentProvider.refund_payment` —
+    every one of these needs SQLAlchemy/FastAPI (`CancellationService`/
+    `PaymentService`/routes) or `stripe` (the Stripe provider), none of
+    which import in this sandbox (confirmed again this session:
+    `python3 -c "import fastapi"` / `sqlalchemy` / `stripe` all raise
+    `ModuleNotFoundError`). This is the identical, already-documented T-1
+    constraint — nothing new.
+  - **Requires external verification:** `StripePaymentProvider.
+    refund_payment` against a real Stripe test-mode account (a live
+    PaymentIntent, a real partial refund, confirming the `succeeded` vs
+    `pending` status split actually behaves as the Refunds API reference
+    describes) — cannot be exercised until T-1's environment exists.
+
 ---
 
 ## Proposed (not yet authorized)
@@ -177,15 +279,6 @@ dependency).
   frozen regardless of the decision (see `docs/PROJECT_ROADMAP.md` §2,
   source-of-truth item 9).
 - **Depends on:** nothing technical — a product/planning call.
-
-### T-3 — Phase 7 remainder: `refund_payment`
-- **Scope:** Implement the reserved, `STAFF_OR_ADMIN_ONLY` `refund_payment`
-  tool/route against `PaymentProvider`, and fix `CancellationService.
-  cancel()`'s local-only `REFUNDED` flip (see `docs/PAYMENTS.md` §9) to
-  actually call it when a paid booking is cancelled.
-- **NOT in scope:** payment-link delivery (T-5), telephony (T-4).
-- **Depends on:** T-1 recommended first; a Stripe test-mode account for
-  end-to-end verification.
 
 ### T-4 — Phase 6 remainder: telephony
 - **Scope:** `scripts/setup_vapi.py` (spec §51: create/update tools,

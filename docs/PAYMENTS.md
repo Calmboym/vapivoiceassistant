@@ -1,10 +1,10 @@
-# Payments (Phase 6 Milestone 1)
+# Payments (Phase 6 Milestone 1; `refund_payment` added in T-3)
 
-Scope of this milestone: `create_payment_session` and `get_payment_status`
-only. `refund_payment` (staff/admin-only, already reserved in
-`TOOL_AUTHORIZATION_MATRIX` since an earlier phase) and any email/SMS
-delivery of the payment link are explicitly **not** part of this
-milestone — see "Known limitations" below.
+Scope of Milestone 1: `create_payment_session` and `get_payment_status`
+only. `refund_payment` was reserved (staff/admin-only, in
+`TOOL_AUTHORIZATION_MATRIX`) but not implemented at that time — it is now
+(§9, this session). Email/SMS delivery of the payment link is still
+explicitly **not** built — see "Known limitations" below.
 
 ## 1. Architecture
 
@@ -185,6 +185,17 @@ reserved for the authenticated-web-owner-or-staff case; the voice path
 uses the already-registered `REQUIRES_VERIFIED_BOOKING` gate instead —
 the same one `cancel_booking`/`modify_booking` already use.
 
+`refund_payment` (T-3) uses the SAME `authorize_payment_access()` gate as
+the other two web routes, with `required_permission=PAYMENTS_REFUND` —
+but has no voice path at all, by design: `PAYMENTS_REFUND` is only ever
+held by FINANCE/ADMIN/SUPER_ADMIN (`app/core/security/rbac.py`), so a
+customer-owner is denied by the same "missing_permission_for_self_access"
+branch that already existed; a `VAPI_AGENT`/`ANONYMOUS_VERIFIED` actor is
+denied because `authorize_payment_access` never accepts a
+`verification_purpose` at all (see that function's own §14 note). This
+was true before T-3, unchanged by it — T-3 only adds the route that
+finally exercises the already-correct policy.
+
 ## 7. Vapi payment flow & confirmation rules
 
 `create_payment_session` requires `customer_confirmed: true` in its tool
@@ -231,21 +242,62 @@ SMS) is not part of this milestone** and was explicitly scoped out:
   this gap** — it needs its own milestone with its own review, not a
   quiet addition here.
 
-## 9. Known limitation: cancellation does not call the payment provider
+## 9. Refund payment (T-3 — was "Known limitation: cancellation does not call the payment provider")
 
-`CancellationService.cancel()` (pre-existing, unmodified logic) flips
-`Booking.payment_status` from `PAID` to `REFUNDED` locally — it does
-**not** call `PaymentProvider` or Stripe to actually refund anything.
-Before this milestone, `payment_status` could never actually reach
-`PAID` in practice, so this line was effectively dead code. **It is
-reachable now.** A cancelled, previously-paid booking will report
-`REFUNDED` without a real refund having occurred. This is explicitly out
-of this milestone's scope (`create_payment_session` + `get_payment_status`
-only) — `refund_payment` is a separate, already-reserved
-`STAFF_OR_ADMIN_ONLY` tool for a future milestone to actually implement
-against `PaymentProvider`. Flagged here, and with an inline comment at
-the exact line in `cancellation_service.py`, specifically so it isn't
-mistaken for an oversight.
+**Fixed this session.** Before T-3, `CancellationService.cancel()` flipped
+`Booking.payment_status` from `PAID` to `REFUNDED` locally without ever
+calling `PaymentProvider`/Stripe — a cancelled, previously-paid booking
+reported `REFUNDED` without a real refund having occurred. This was
+tracked explicitly (not an oversight) and is now closed:
+
+- **`PaymentProvider.refund_payment()`** (new abstract method) +
+  `RefundResult`/`RefundStatus`/`PaymentRefundError`, implemented in both
+  `MockPaymentProvider` (deterministic, dependency-free) and
+  `StripePaymentProvider` (`stripe.Refund.create` against the
+  PaymentIntent, cross-checked against Stripe's current Refunds API
+  reference this session).
+- **`CancellationService.cancel()`** now calls it directly for a `PAID`
+  booking, using the airline's `CancellationResult.refundable_amount`
+  (net of `cancellation_fee` — a cancellation fee is real money the
+  airline keeps, refunding the full `Payment.amount` regardless would be
+  wrong). Always sets `Booking.payment_status = "REFUNDED"` on a
+  successful paid cancellation, full or fee-adjusted. If the refund call
+  itself fails, the airline cancellation is **not** rolled back (it
+  already happened and can't be undone locally) —
+  `Booking.payment_status` stays `"PAID"` (never falsely `"REFUNDED"`),
+  an audit event (`payment.refund_failed_during_cancellation`) records
+  it, and staff can complete it manually via the new standalone route
+  below.
+- **`POST /api/v1/payments/refunds`** — a new, separate, staff-only
+  (`PAYMENTS_REFUND`) REST route for a manual/goodwill refund on an
+  *active* booking, independent of cancellation. A partial refund here
+  only flips `Booking.payment_status` to `"REFUNDED"` once the
+  cumulative refunded amount covers the full payment — otherwise the
+  booking stays `"PAID"` (it's still a valid, active booking, just
+  partially refunded).
+- **Design note — `Payment.status` is never mutated by a refund.** It
+  stays `"SUCCEEDED"` forever once paid; refund tracking lives entirely
+  in five new columns on `Payment`
+  (`provider_refund_id`/`refunded_amount`/`refund_status`/`refunded_at`/
+  `refund_reason`, migration `0005`) — orthogonal to
+  `app/core/payments/state_machine.py`'s session-status vocabulary,
+  which T-3 deliberately did NOT touch. This keeps
+  `tests.test_payments_core.StateMachineTests.
+  test_booking_payment_status_mapping_never_produces_refunded` (and
+  every other `StateMachineTests` assertion) true without modification —
+  confirmed by re-running the full dependency-free suite after the
+  change (see §12).
+- **Known gap this still leaves:** no webhook subscription for Stripe's
+  `refund.updated`/`charge.refunded` events. A refund that comes back
+  `pending`/`requires_action` from the synchronous `POST /v1/refunds`
+  call is recorded as such (`Payment.refund_status`), but nothing
+  resolves it to `succeeded`/`failed` later on its own — `Booking.
+  payment_status` stays unchanged until it's checked again. This was
+  explicitly out of T-3's scope (see `docs/TASK_BOARD.md`) — a future
+  milestone would add a `refund.*` case to
+  `PaymentProvider.verify_and_parse_webhook`/`PaymentService.
+  handle_webhook_event`, mirroring how `checkout.session.completed`
+  already works.
 
 ## 10. Environment variables
 
@@ -278,34 +330,39 @@ Both Stripe variables are only required when `PAYMENT_PROVIDER=stripe` —
 
 | Component | Status |
 |---|---|
-| `app/core/payments/state_machine.py` | **Executed** — 12 tests, `tests/test_payments_core.py::StateMachineTests`/`WebhookEventMappingTests` |
-| `app/providers/payments/base.py`, `mock.py` | **Executed** — 17 tests, `tests/test_payments_core.py::MockPaymentProviderTests`/`PaymentProviderErrorTests` |
+| `app/core/payments/state_machine.py` | **Executed** — 15 tests, `tests/test_payments_core.py::StateMachineTests`/`WebhookEventMappingTests` (unchanged by T-3 — deliberately not modified; corrected this session from the previous "12" in this table, which undercounted `WebhookEventMappingTests`) |
+| `app/providers/payments/base.py`, `mock.py` | **Executed** — 31 tests, `tests/test_payments_core.py::MockPaymentProviderTests`/`PaymentProviderErrorTests`/`RefundResultTests`/`MockPaymentProviderRefundTests` (13 new for T-3's `refund_payment`) |
 | `app/core/vapi/argument_mapping.py`'s two new mappers | **Executed** — 9 tests in `tests/test_vapi_core.py::MutatingToolMappingTests` |
-| `authorize_payment_access` denial of `VAPI_AGENT`/`ANONYMOUS_VERIFIED` for `payments.create`/`payments.read` | **Executed** — `tests/test_security_core.py::OwnershipTests` |
-| `app/providers/payments/stripe_provider.py` | **Written, verified against current Stripe documentation, NOT executed** — no network access to install `stripe` |
-| `app/models/payment.py`, migration `0004`, `app/repositories/payment_repository.py`, `app/services/payment_service.py`, `app/api/routes/payments.py`, `vapi.py`'s two new dispatch functions | **Written, reviewed against verified method signatures, NOT executed** — needs FastAPI/SQLAlchemy/a real Postgres, none installable here (same constraint as the entire FastAPI layer since Phase 4) |
-| A real Stripe Checkout Session actually completing end-to-end | **Not attempted** — requires a live Stripe test-mode account |
+| `authorize_payment_access` denial of `VAPI_AGENT`/`ANONYMOUS_VERIFIED` for `payments.create`/`payments.read`/`payments.refund` | **Executed** — `tests/test_security_core.py::OwnershipTests`, including the pre-existing `test_finance_role_can_refund_anyone` (T-3 didn't need to touch this file — the policy was already correct) |
+| `refund_payment` never becoming a Vapi-callable tool | **Executed** — `tests/test_vapi_core.py::ToolRegistryConsistencyTests.test_authorization_entries_without_a_schema_are_exactly_staff_only` (pre-existing test, re-confirmed still passing after T-3) |
+| `app/providers/payments/stripe_provider.py` (including `refund_payment`, T-3) | **Written, verified against current Stripe documentation, NOT executed** — no network access to install `stripe` |
+| `app/models/payment.py`, migrations `0004`/`0005`, `app/repositories/payment_repository.py`, `app/services/payment_service.py` (including T-3's `apply_refund_outcome`/`refund_payment`), `app/services/cancellation_service.py` (T-3's refund wiring), `app/api/routes/payments.py` (including T-3's `POST /refunds`), `vapi.py`'s dispatch functions | **Written, reviewed against verified method signatures, NOT executed** — needs FastAPI/SQLAlchemy/a real Postgres, none installable here (same constraint as the entire FastAPI layer since Phase 4; re-confirmed this session: `python3 -c "import fastapi"` / `sqlalchemy` / `stripe` all raise `ModuleNotFoundError`) |
+| A real Stripe Checkout Session, or a real Stripe refund, actually completing end-to-end | **Not attempted** — requires a live Stripe test-mode account |
 
-Before a production launch that actually charges customers: run
-`alembic upgrade head` against a real Postgres and confirm migration
-`0004` applies cleanly on top of `0003`; install the full stack and run
+Before a production launch that actually charges (or refunds) customers:
+run `alembic upgrade head` against a real Postgres and confirm migrations
+`0004`/`0005` apply cleanly in sequence; install the full stack and run
 `tests/test_api_security.py`/`test_vapi_api.py` for real (this remains
 the single highest-value next step for the whole Vapi+payments surface,
 not new to this milestone); complete a real Stripe test-mode Checkout
-Session end-to-end, including a real webhook delivery via `stripe
-listen` or a configured endpoint; then run PCI-relevant configuration
-review (this integration never touches raw card data by design — see §2
-— but Stripe Checkout's own domain/branding/webhook-endpoint setup still
-needs a human to configure and verify in the Stripe Dashboard).
+Session AND a real test-mode refund end-to-end, including real webhook
+delivery via `stripe listen` or a configured endpoint; then run
+PCI-relevant configuration review (this integration never touches raw
+card data by design — see §2 — but Stripe Checkout's own domain/
+branding/webhook-endpoint setup still needs a human to configure and
+verify in the Stripe Dashboard).
 
 ## 13. Known limitations (summary)
 
 - Out-of-band delivery of the payment link (§8) — not built, scoped out.
-- Cancellation's refund flip is local-only (§9) — pre-existing, now
-  load-bearing, not fixed in this milestone.
+- Cancellation's refund now calls the real payment provider (§9, fixed
+  in T-3) — but there's still no webhook subscription for Stripe's
+  `refund.updated`/`charge.refunded` events, so a non-instant
+  (`pending`/`requires_action`) refund is recorded as such and never
+  auto-resolves — scoped out of T-3, see §9's last bullet.
 - Stripe webhook has no rate limiting (§5) — scoped out, reasoning given.
-- `StripePaymentProvider` is unexecuted (§2/§12).
-- The entire FastAPI/SQLAlchemy layer this milestone added is unexecuted
-  in this sandbox (§12) — same constraint as every prior phase.
-- `refund_payment` remains unimplemented — reserved, staff/admin-only,
-  explicitly out of this milestone's scope.
+- `StripePaymentProvider` (including `refund_payment`) is unexecuted
+  (§2/§9/§12).
+- The entire FastAPI/SQLAlchemy layer this milestone (and T-3) added is
+  unexecuted in this sandbox (§12) — same constraint as every prior
+  phase.
