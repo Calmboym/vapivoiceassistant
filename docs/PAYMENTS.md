@@ -1,10 +1,11 @@
-# Payments (Phase 6 Milestone 1; `refund_payment` added in T-3)
+# Payments (Phase 6 Milestone 1; `refund_payment` added in T-3; payment-link delivery added in T-5)
 
 Scope of Milestone 1: `create_payment_session` and `get_payment_status`
 only. `refund_payment` was reserved (staff/admin-only, in
-`TOOL_AUTHORIZATION_MATRIX`) but not implemented at that time — it is now
-(§9, this session). Email/SMS delivery of the payment link is still
-explicitly **not** built — see "Known limitations" below.
+`TOOL_AUTHORIZATION_MATRIX`) but not implemented at the time — added in
+T-3 (§9). Email/SMS delivery of the payment link was reserved and
+explicitly scoped out at that time too — built in T-5 (§8); see "Known
+limitations" below for what's still genuinely unverified about it.
 
 ## 1. Architecture
 
@@ -221,26 +222,64 @@ for an LLM-supplied (or forged) amount to flow through; see
 `tests/test_vapi_core.py::MutatingToolMappingTests.
 test_create_payment_session_ignores_llm_supplied_amount`.
 
-## 8. Known limitation: out-of-band delivery
+**Link delivery (T-5):** as of T-5, the checkout link is also emailed —
+and, for a session created during a live voice call, texted — to the
+contact on file automatically, as a system-triggered side effect inside
+`PaymentService.create_payment_session` itself. The tool's description
+now tells the assistant it can say so. See §8 below for the full account
+(this used to be a documented gap; it isn't one anymore, with caveats).
 
-`create_payment_session` returns the Stripe Checkout URL as **data** —
-the dispatch function's result string includes it, for the assistant to
-work with. It does **not** claim the caller has received or can access
-that link, and the tool's own description explicitly instructs the
-assistant not to say it's been sent. **Actually delivering it (email or
-SMS) is not part of this milestone** and was explicitly scoped out:
+## 8. Payment-link delivery (T-5 — was "Known limitation: out-of-band delivery")
 
-- `app/services/email_provider.py`'s only implementation is
-  `MockEmailProvider` — not a production delivery mechanism.
-- No SMS provider exists anywhere in this codebase (`TWILIO_*` config
-  variables are pre-wired in `.env.example`/`config.py`, nothing is built
-  on them).
-- A phone caller who needs the link delivered has no path to receive it
-  today except a human transfer (`transfer_to_human`) — the tool's
-  description says as much.
-- **Do not silently add Resend/Twilio/any delivery provider to close
-  this gap** — it needs its own milestone with its own review, not a
-  quiet addition here.
+**This section previously ended with: "Do not silently add Resend/
+Twilio/any delivery provider to close this gap — it needs its own
+milestone with its own review, not a quiet addition here." T-5
+(`docs/TASK_BOARD.md`) is that milestone, explicitly authorized by the
+project owner on 2026-09-09 — this is not a quiet addition.**
+
+`create_payment_session` still returns the Stripe Checkout URL as
+**data** in the dispatch function's result string, exactly as before —
+that part is unchanged, and there's still nothing in the tool's JSON
+schema a card number could be placed into. What changed is what happens
+alongside that return value:
+
+- `PaymentService.create_payment_session` now calls
+  `NotificationService.send_payment_link(booking, payment,
+  also_sms=(call_id is not None))` immediately after its own `commit()` —
+  a SYSTEM-triggered side effect, never a Vapi tool the assistant invokes
+  (MASTER_RULES.md §6). Email is sent for every session, any channel;
+  SMS is sent additionally only when `call_id is not None` — i.e. only
+  for a session created during a live voice call, the specific scenario
+  this section used to describe as unsolved ("a phone caller who needs
+  the link delivered has no path to receive it today except a human
+  transfer"). A web-created session's browser already has `checkout_url`
+  on screen (see `_payment_out()`'s docstring in
+  `app/api/routes/payments.py`) — texting it too wasn't asked for.
+- `app/services/email_provider.py` now has a second implementation,
+  `ResendEmailProvider`, alongside `MockEmailProvider` (selected via the
+  new `EMAIL_PROVIDER=mock|resend` setting, default `mock` — nothing
+  changes for anyone who doesn't set it).
+- `app/services/sms_provider.py` (new) has `MockSmsProvider` and
+  `TwilioSmsProvider` (selected via the new `SMS_PROVIDER=mock|twilio`
+  setting, same default-safe pattern).
+- **Delivery is best-effort, not guaranteed, and this is a deliberate
+  design choice, not an oversight:** every send is wrapped so a failure
+  (Resend/Twilio unreachable, invalid address/number, rate-limited, etc.)
+  is caught, audited (`notification.payment_link_failed`), and never
+  raised — a failed notification must never roll back or fail a payment
+  session that already succeeded with Stripe. The tool's description now
+  reflects this: the assistant may tell the caller delivery is happening,
+  but should not promise a specific arrival time, and should offer a
+  human transfer if the caller says nothing arrived after a reasonable
+  wait.
+- **Not actually verified against real Resend/Twilio accounts** — no
+  network egress exists in any sandbox this project has run in, and no
+  real credentials exist here either. `ResendEmailProvider`/
+  `TwilioSmsProvider` are written and cross-checked against each
+  provider's own current API reference (fetched live this session, not
+  assumed from training data) but have never made a real HTTP call. See
+  `docs/TASK_BOARD.md`'s T-5 entry, "Testing status," for the exact,
+  unrounded accounting.
 
 ## 9. Refund payment (T-3 — was "Known limitation: cancellation does not call the payment provider")
 
@@ -311,6 +350,11 @@ Both Stripe variables are only required when `PAYMENT_PROVIDER=stripe` —
 `Settings.validate_for_production()` checks this conditionally, mirroring
 `AIRLINE_PROVIDER`'s existing mock/real split.
 
+Payment-LINK *delivery* (§8, T-5) is configured separately —
+`EMAIL_PROVIDER`/`SMS_PROVIDER` and their respective credentials — see
+`docs/ENVIRONMENT_VARIABLES.md` for the full list; not duplicated here
+since they're not Stripe-specific.
+
 ## 11. Local development
 
 1. Leave `PAYMENT_PROVIDER=mock` (the default) — no Stripe account
@@ -338,6 +382,11 @@ Both Stripe variables are only required when `PAYMENT_PROVIDER=stripe` —
 | `app/providers/payments/stripe_provider.py` (including `refund_payment`, T-3) | **Written, verified against current Stripe documentation, NOT executed** — no network access to install `stripe` |
 | `app/models/payment.py`, migrations `0004`/`0005`, `app/repositories/payment_repository.py`, `app/services/payment_service.py` (including T-3's `apply_refund_outcome`/`refund_payment`), `app/services/cancellation_service.py` (T-3's refund wiring), `app/api/routes/payments.py` (including T-3's `POST /refunds`), `vapi.py`'s dispatch functions | **Written, reviewed against verified method signatures, NOT executed** — needs FastAPI/SQLAlchemy/a real Postgres, none installable here (same constraint as the entire FastAPI layer since Phase 4; re-confirmed this session: `python3 -c "import fastapi"` / `sqlalchemy` / `stripe` all raise `ModuleNotFoundError`) |
 | A real Stripe Checkout Session, or a real Stripe refund, actually completing end-to-end | **Not attempted** — requires a live Stripe test-mode account |
+| `app/core/notifications/content.py` (T-5) | **Executed** — 31 tests, `tests/test_notifications_core.py` |
+| `app/services/email_provider.py`'s `MockEmailProvider`/`app/services/sms_provider.py`'s `MockSmsProvider` (T-5) | **Executed** — same 31 tests above |
+| `app/services/email_provider.py`'s `ResendEmailProvider`, `app/services/sms_provider.py`'s `TwilioSmsProvider` (T-5) | **Written, verified against current Resend/Twilio API documentation fetched this session, NOT executed** — no network access to install/call `httpx`/reach either provider |
+| `app/services/notification_service.py`, and T-5's changes to `booking_service.py`/`payment_service.py`/`bookings.py`/`payments.py`/`vapi.py` (T-5) | **Written, reviewed against verified method signatures, NOT executed** — same FastAPI/SQLAlchemy constraint as every other service-layer file above |
+| A real Resend email, or a real Twilio SMS, actually arriving | **Not attempted** — requires real credentials and network egress this sandbox has never had |
 
 Before a production launch that actually charges (or refunds) customers:
 run `alembic upgrade head` against a real Postgres and confirm migrations
@@ -354,7 +403,14 @@ verify in the Stripe Dashboard).
 
 ## 13. Known limitations (summary)
 
-- Out-of-band delivery of the payment link (§8) — not built, scoped out.
+- Payment-link delivery (§8) — built in T-5 (email always, SMS for a
+  live voice call), but unverified against real Resend/Twilio accounts
+  (no network egress in this sandbox); best-effort/non-blocking by
+  design, not a bug.
+- `Booking.cancellation_deadline` is never populated anywhere in this
+  codebase (pre-existing, found during T-5, not fixed — out of scope) —
+  the booking-confirmation email's cancellation-terms line is always the
+  generic honest sentence today, never a specific date.
 - Cancellation's refund now calls the real payment provider (§9, fixed
   in T-3) — but there's still no webhook subscription for Stripe's
   `refund.updated`/`charge.refunded` events, so a non-instant
@@ -362,7 +418,8 @@ verify in the Stripe Dashboard).
   auto-resolves — scoped out of T-3, see §9's last bullet.
 - Stripe webhook has no rate limiting (§5) — scoped out, reasoning given.
 - `StripePaymentProvider` (including `refund_payment`) is unexecuted
-  (§2/§9/§12).
-- The entire FastAPI/SQLAlchemy layer this milestone (and T-3) added is
-  unexecuted in this sandbox (§12) — same constraint as every prior
-  phase.
+  (§2/§9/§12); `ResendEmailProvider`/`TwilioSmsProvider` (§8, T-5) are
+  unexecuted for the same reason.
+- The entire FastAPI/SQLAlchemy layer this milestone (T-3, and T-5's
+  service-layer changes) added is unexecuted in this sandbox (§12) —
+  same constraint as every prior phase.

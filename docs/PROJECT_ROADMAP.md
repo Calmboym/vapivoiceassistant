@@ -131,13 +131,13 @@ Distinguishing originally-planned vs. actual:
 | 1 | Repo/infra/Docker/DB/Redis/FastAPI/Next.js/config/logging/health | 🟡 **Written & internally consistent; never executed end-to-end** | `docker-compose.yml`, full `apps/api`/`apps/web` scaffold, `config.py`, `logging.py`, `health.py` all present and `py_compile`-clean (re-verified this audit); `docker compose up` has never been run in any build session to date (no Docker/network access in any sandbox used so far, this audit's included) | Run it, for the first time, in a networked environment with Docker |
 | 2 | DB schema/Alembic/airport & aircraft data/mock flights/`MockAirlineProvider` | 🟢 **Complete, logic-verified** | Migrations `0001`–`0004` present and column-checked against models (re-verified this audit, see §6.3 for one correction); 18 airports seeded (all of the spec's §8 minimum list plus 3 more) with the "any London airport" disambiguation group from §6; `MockAirlineProvider` fully covered by `tests/test_core_logic.py` | Run `alembic upgrade head` + `python -m app.db.seed` against a real Postgres |
 | 3 | Flight search/quote/booking/lookup/modification/cancellation/passenger mgmt | 🟢 **Complete, logic-verified** | `app/services/{flight,booking,cancellation,passenger}_service.py`, routes wired in `main.py`, `tests/test_core_logic.py` passing | HTTP-level execution against a real running FastAPI instance |
-| 4 | Authentication, RBAC, audit logging, rate limiting, security | 🟢 **Complete, core logic executed; HTTP layer written, unexecuted** | 93 dependency-free tests (`test_security_core.py`) actually pass (re-run this audit: confirmed); `tests/test_api_security.py` (6 classes, 18 methods) written against real FastAPI `TestClient`, skips cleanly here | Install FastAPI/SQLAlchemy/pytest in a networked environment and run `test_api_security.py` for real — the single highest-leverage unblocked action for the whole project (blocks verifying Phases 4 through 7's HTTP layers all at once) |
-| 5 | Vapi integration: webhook, tools, assistant config, voice system prompt | 🟢 **Complete as code; live-call behavior unverified** | `app/api/routes/vapi.py`, `app/core/vapi/*`, `app/core/security/vapi_{authorization,webhook_auth}.py`; 56 dependency-free tests pass; tool-schema ⇄ authorization-matrix ⇄ dispatch-table consistency independently re-verified this audit (21 schemas, 23 matrix entries, 16 wired dispatch functions — see §6.4 for tools present in spec §19 but absent here) | Live Vapi account + real phone call; `transfer_to_human`'s native `transferCall` companion tool has never been configured. **Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` (spec §51) is now written (24 dependency-free tests, `OK`) and would automate the `transferCall` configuration too — but has never been run against a real account, so this row's "live-call behavior unverified" still stands unchanged. |
+| 4 | Authentication, RBAC, audit logging, rate limiting, security | 🟢 **Complete, core logic executed; HTTP layer written, unexecuted** | 95 dependency-free tests (`test_security_core.py`) actually pass (re-run this session, T-5: corrected from a stale "93" carried in this row since an earlier audit — the row's own count never matched a direct `grep -c "def test_"` re-check, done this session, not assumed); `tests/test_api_security.py` (6 classes, 18 methods) written against real FastAPI `TestClient`, skips cleanly here | Install FastAPI/SQLAlchemy/pytest in a networked environment and run `test_api_security.py` for real — the single highest-leverage unblocked action for the whole project (blocks verifying Phases 4 through 7's HTTP layers all at once) |
+| 5 | Vapi integration: webhook, tools, assistant config, voice system prompt | 🟢 **Complete as code; live-call behavior unverified** | `app/api/routes/vapi.py`, `app/core/vapi/*`, `app/core/security/vapi_{authorization,webhook_auth}.py`; 65 dependency-free tests pass (corrected this session from a stale "56", same reason as row 4 above); tool-schema ⇄ authorization-matrix ⇄ dispatch-table consistency independently re-verified this audit (21 schemas, 23 matrix entries, 16 wired dispatch functions — see §6.4 for tools present in spec §19 but absent here) | Live Vapi account + real phone call; `transfer_to_human`'s native `transferCall` companion tool has never been configured. **Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` (spec §51) is now written (24 dependency-free tests, `OK`) and would automate the `transferCall` configuration too — but has never been run against a real account, so this row's "live-call behavior unverified" still stands unchanged. |
 | 6 | Phone integration: inbound call, voice booking/lookup/cancellation, human transfer | 🟡 **PARTIAL — and the repo's own phase labels do not match this row; read §6.1 before trusting any doc that says "Phase 6" without qualification** | The *logic* for voice booking/lookup/cancellation/human-transfer-logging is the same code delivered under "Phase 5" above (`create_booking`/`get_booking`/`cancel_booking`/`modify_booking`/`transfer_to_human` Vapi tools). What has **not** happened: a real phone number connected to a real Vapi assistant, or a real inbound call ever reaching it. **Updated 2026-09-09 (T-4, authorized this session):** `scripts/setup_vapi.py` now exists — written, 24 dependency-free tests passing, never run against a real account | Live phone number + inbound call test (Master Build Prompt §79 items 19–25); running `scripts/setup_vapi.py --apply` against a real Vapi account for the first time; native `transferCall` tool configuration (the script automates creating it, but the transfer itself needs a real call to confirm) |
-| 7 | Payments: Stripe, webhooks, booking/payment consistency | 🟡 **PARTIAL — delivered under the repo's own "Phase 6 Milestone 1" label; see §6.1. `refund_payment` (T-3) closed one of the two gaps this row used to list** | `create_payment_session`/`get_payment_status`/`refund_payment` implemented, code-reviewed, and (for the dependency-free portions) executed — 46 tests in `test_payments_core.py`; `CancellationService.cancel()` now calls the real provider for a paid cancellation (`docs/PAYMENTS.md` §9); `StripePaymentProvider` (incl. `refund_payment`) written and cross-checked against live Stripe docs but never executed (no network in any sandbox to date) | A real Stripe test-mode Checkout Session AND a real test-mode refund completing end-to-end; a `refund.updated`/`charge.refunded` webhook subscription (a non-instant refund's `pending`/`requires_action` status never auto-resolves — scoped out of T-3 on purpose); out-of-band delivery of the payment link (no email/SMS provider exists — see Phase 8) |
-| 8 | Notifications: email, SMS | 🔴 **NOT IMPLEMENTED** | Only `app/services/email_provider.py::MockEmailProvider` exists (not a real delivery mechanism); no SMS provider anywhere in the codebase; `RESEND_API_KEY`/`TWILIO_*` are defined in `Settings` and `.env.example` but nothing reads them | Build a real email provider (Resend or SMTP) and an SMS provider (Twilio), wire booking-confirmation and payment-link delivery to them |
+| 7 | Payments: Stripe, webhooks, booking/payment consistency | 🟡 **PARTIAL — delivered under the repo's own "Phase 6 Milestone 1" label; see §6.1. `refund_payment` (T-3) and payment-link delivery (T-5) closed the two gaps this row used to list** | `create_payment_session`/`get_payment_status`/`refund_payment` implemented, code-reviewed, and (for the dependency-free portions) executed — 46 tests in `test_payments_core.py`; `CancellationService.cancel()` now calls the real provider for a paid cancellation (`docs/PAYMENTS.md` §9); payment-link email/SMS delivery now wired (`docs/PAYMENTS.md` §8, T-5) — content-builder logic executed (31 tests, `test_notifications_core.py`), provider HTTP calls never executed; `StripePaymentProvider` (incl. `refund_payment`) written and cross-checked against live Stripe docs but never executed (no network in any sandbox to date) | A real Stripe test-mode Checkout Session AND a real test-mode refund completing end-to-end; a `refund.updated`/`charge.refunded` webhook subscription (a non-instant refund's `pending`/`requires_action` status never auto-resolves — scoped out of T-3 on purpose); a real email/SMS actually arriving via Resend/Twilio (T-5, blocked on network egress + credentials) |
+| 8 | Notifications: email, SMS | 🟡 **PARTIAL — implemented this session (T-5); real-provider execution unverified, same class of gap as Phase 7's Stripe row** | `app/services/email_provider.py` now has `ResendEmailProvider` alongside `MockEmailProvider`; `app/services/sms_provider.py` (new) has `TwilioSmsProvider`/`MockSmsProvider`; both wired to booking-confirmation (email only) and payment-link (email always, SMS for a live voice call) delivery via the new `NotificationService`; 31 dependency-free tests for the content-builder logic (`tests/test_notifications_core.py`) actually pass | Real `RESEND_API_KEY`/`TWILIO_*` credentials + network egress (neither exists in any sandbox this project has used) to confirm an actual email/SMS arrives; see `docs/TASK_BOARD.md`'s T-5 entry |
 | 9 | Admin dashboard | 🔴 **NOT IMPLEMENTED** | No `/api/v1/admin`, `/api/v1/customers`, or `/api/v1/calls` routes exist (confirmed by reading every route file and `main.py`'s router registration); no admin pages in `apps/web`; only the backend RBAC boundary (`ADMIN`/`SUPER_ADMIN` roles, `admin.*` permissions) and `bootstrap_admin.py` exist | Everything — API routes to read `Call`/`ToolExecution`/`Booking`/`Payment` data for staff, and the Next.js admin UI itself |
-| 10 | Testing & production hardening | 🟡 **PARTIAL** | **236/236 dependency-free tests pass — re-executed and confirmed this session (2026-09-08, T-3: +13 over the prior 223, all in `test_payments_core.py` for `refund_payment`).** `tests/test_api_security.py` and `tests/test_vapi_api.py` are written (8 skips, confirmed) but have never run against real FastAPI. `tests/{e2e,integration,voice}/` contain only `README.md` placeholders — no Playwright, no real-DB integration tests, no voice conversation test suite (spec §56) exist yet | Install the full stack and run the FastAPI-level suites for real; write the Playwright E2E suite (needs real booking pages in `apps/web` first — those don't exist either, see Phase 9); write the voice conversation test suite from spec §56 |
+| 10 | Testing & production hardening | 🟡 **PARTIAL** | **267/267 dependency-free tests pass — re-executed and confirmed this session (2026-09-09, T-5: +31 over the prior 236, all in the new `test_notifications_core.py`).** `tests/test_api_security.py` and `tests/test_vapi_api.py` are written (8 skips, confirmed) but have never run against real FastAPI. `tests/{e2e,integration,voice}/` contain only `README.md` placeholders — no Playwright, no real-DB integration tests, no voice conversation test suite (spec §56) exist yet | Install the full stack and run the FastAPI-level suites for real; write the Playwright E2E suite (needs real booking pages in `apps/web` first — those don't exist either, see Phase 9); write the voice conversation test suite from spec §56 |
 
 Legend matches the audit brief: 🟢 COMPLETE · 🟡 PARTIAL · 🔴 NOT
 IMPLEMENTED · ⚠️ DEFECTIVE · 🔵 DEFERRED BY DECISION · ⚪ NOT VERIFIABLE.
@@ -413,13 +413,13 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   Sessions: `create_payment_session`, `get_payment_status`), labeled
   "Phase 6 Milestone 1" in its own handoff — see §6.1 for why that label
   doesn't match the original spec's numbering.
-- **This session's work (2026-09-09):** T-4 (Phase 6 remainder —
+- **Earlier the same day (2026-09-09):** T-4 (Phase 6 remainder —
   telephony) moved from Proposed to **AUTHORIZED** on the project
   owner's explicit instruction, and `scripts/setup_vapi.py` (spec §51,
   WBS-2.1) was written — idempotent create-or-update for the 21
   registered Vapi tools, the native `transferCall` tool, the Assistant,
   and phone-number attachment, cross-checked against Vapi's current API
-  docs (fetched this session; includes one genuinely new finding —
+  docs (fetched that session; includes one genuinely new finding —
   Vapi's move to a dashboard-managed Custom Credentials webhook-auth
   system, which does not contradict what
   `vapi_webhook_auth.py` already had on record). 24 new dependency-free
@@ -429,29 +429,60 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   verification) remain BLOCKED on the same external dependency (a live
   Vapi account) the task always named, compounded by this sandbox's
   network restriction.
+- **This session's work (2026-09-09):** T-5 (Phase 8 — notifications)
+  moved from Proposed to **AUTHORIZED** on the project owner's explicit
+  instruction ("Execute and authorize T-5"), same mechanism T-4 used.
+  `app/core/notifications/content.py` (new, dependency-free content
+  builders), `app/services/email_provider.py` (extended: 2 new methods
+  + `ResendEmailProvider`), `app/services/sms_provider.py` (new:
+  `SmsProvider` interface + `MockSmsProvider` + `TwilioSmsProvider`),
+  and `app/services/notification_service.py` (new orchestration layer,
+  wired into `BookingService.create_booking`/`PaymentService.
+  create_payment_session` as an optional, best-effort, non-blocking
+  system side effect — never a Vapi tool, MASTER_RULES §6). Closes the
+  gap `docs/PAYMENTS.md` §8 documented for payment-link delivery, and
+  spec §44's booking-confirmation requirement, both for the first time.
+  31 new dependency-free tests (`tests/test_notifications_core.py`),
+  executed: `OK`. Resend's and Twilio's request/response/error shapes
+  were fetched from each provider's own current API reference this
+  session, not assumed from training data — same discipline T-3/T-4
+  applied to Stripe/Vapi. **T-5 is NOT closed** — see its
+  `docs/TASK_BOARD.md` entry: real Resend/Twilio execution against live
+  accounts remains BLOCKED on the same external dependency (network
+  egress + real credentials) every other real-provider integration in
+  this project has hit. Two pre-existing gaps were found (not
+  introduced) and left honestly unfixed as out of scope: `Booking.
+  cancellation_deadline` is never populated anywhere in this codebase,
+  and `Booking` does not persist which cabin class was booked — see
+  `docs/TASK_BOARD.md`'s T-5 entry, "Known gap this task did not fix."
 - **Current authorized work:** T-1 (install & execute the FastAPI/
   SQLAlchemy test layer for real) remains authorized and still
   **BLOCKED** — re-confirmed again this session (`python3 -c "import
   fastapi"` / `sqlalchemy` / `stripe` / `httpx` / `pydantic` all raise
   `ModuleNotFoundError`; network still disabled in this sandbox).
   Identical to every prior sandbox since Phase 4; not a new finding. T-4
-  is now also authorized and also **BLOCKED**, for the same underlying
-  reason plus its own further dependency on a live Vapi account — see
-  `docs/TASK_BOARD.md`'s T-1 and T-4 entries for the full attempt logs.
+  and T-5 are now also authorized and also **BLOCKED**, for the same
+  underlying reason plus their own further dependencies (a live Vapi
+  account for T-4; real Resend/Twilio credentials for T-5) — see
+  `docs/TASK_BOARD.md`'s T-1, T-4, and T-5 entries for the full attempt
+  logs.
 - **Next work (candidates, not yet chosen):** Step 1 (get the full stack
   installed and run the HTTP-level test suites for real) is the
   recommended first move regardless of which feature comes next, because
   every remaining phase's HTTP layer is equally unverified and this is
   the cheapest way to convert "written, reviewed" into "known to work" or
   "found a real bug" across all of them at once — this now includes
-  T-3's `refund_payment` route/service/CancellationService changes too.
+  T-3's `refund_payment` and T-5's notification-service changes too.
   Running `scripts/setup_vapi.py --apply` for the first time, against a
-  real Vapi account, is the equivalent next move for T-4.
+  real Vapi account, is the equivalent next move for T-4; setting real
+  `RESEND_API_KEY`/`TWILIO_*` values and confirming an actual email/SMS
+  arrives is the equivalent next move for T-5.
 - **Blocked work:** anything requiring network access this build
   environment doesn't have (installing FastAPI/SQLAlchemy/`stripe`/
   `httpx`, `docker compose up`, a live Vapi account, a live Stripe
-  test-mode account) — confirmed still blocked this session too (`pip
-  install fastapi` fails here exactly as it has since Phase 4).
+  test-mode account, a live Resend/Twilio account) — confirmed still
+  blocked this session too (`pip install fastapi` fails here exactly as
+  it has since Phase 4).
 - **Important known risks:** (1) the Phase 6/7 numbering question in
   §6.1 is unresolved and should be decided explicitly rather than left
   ambiguous going forward; (2) ~~`CancellationService.cancel()` flips
@@ -461,7 +492,10 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   `refund.updated`/`charge.refunded` events, so a non-instant
   (`pending`/`requires_action`) refund never auto-resolves on its own —
   deliberately out of T-3's scope, see `docs/PAYMENTS.md` §9's last
-  bullet; (3) the audit-log actor-spoofing gap in §6.6.
+  bullet; (3) the audit-log actor-spoofing gap in §6.6; (4) `Booking.
+  cancellation_deadline` is never populated anywhere in this codebase —
+  found by T-5 while building the booking-confirmation email, not
+  fixed (out of T-5's scope; see §9 below).
 
 ## 9. Known gaps and risks
 
@@ -470,12 +504,30 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   call), native `transferCall` verification against a real call.
   **Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` itself is now
   written — see below, no longer listed as missing, only as unexecuted.
-- Phase 7: payment-link delivery. (`refund_payment` closed by T-3,
+- Phase 7: ~~payment-link delivery~~ closed by T-5, 2026-09-09 — real
+  provider execution still unverified (`refund_payment` closed by T-3,
   2026-09-08.)
-- Phase 8: real email provider, real SMS provider — entirely absent.
+- Phase 8: real email provider, real SMS provider. **Updated
+  2026-09-09 (T-5):** both now implemented (`ResendEmailProvider`/
+  `TwilioSmsProvider`) — see §5's Phase 8 row; no longer listed as
+  missing, only as unexecuted against a live account.
 - Phase 9: admin dashboard — entirely absent (no routes, no UI).
 - Phase 10: Playwright E2E, voice conversation test suite — entirely
   absent (placeholders only).
+- **Newly identified this session (T-5, 2026-09-09):** `Booking.
+  cancellation_deadline` is a nullable column declared in the model,
+  migration, and `BookingOut` schema, but nothing in `create_booking`/
+  `modify_booking` (or anywhere else) ever sets it — confirmed by grep
+  before writing the booking-confirmation notification's content logic,
+  not assumed. `Booking` also does not persist which `CabinClass` was
+  actually booked, so T-5's baggage-allowance lookup for that same email
+  defaults to `CabinClass.ECONOMY` rather than the fare purchased. Both
+  are pre-existing gaps in the booking data model, not caused by any
+  notification code — flagged here rather than silently worked around;
+  see `app/core/notifications/content.py`'s docstring for how the
+  notification content honestly handles both (a generic sentence, never
+  a guessed number/date) and `docs/TASK_BOARD.md`'s T-5 entry for the
+  full account.
 - Cross-cutting domain gaps: seat selection/seat map, baggage mutation,
   support tickets, callback requests, FAQ/knowledge base, i18n (German/
   Persian per spec §41), GDPR export/deletion endpoints, call recording/

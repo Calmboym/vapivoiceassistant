@@ -51,8 +51,16 @@ class Settings(BaseSettings):
     stripe_secret_key: Optional[str] = Field(None, alias="STRIPE_SECRET_KEY")
     stripe_webhook_secret: Optional[str] = Field(None, alias="STRIPE_WEBHOOK_SECRET")
 
-    # --- notifications --------------------------------------------------
+    # --- notifications (Phase 8, T-5) ---------------------------------------
+    # Mirrors AIRLINE_PROVIDER/PAYMENT_PROVIDER's mock/real split exactly —
+    # see app/services/email_provider.py::get_email_provider() /
+    # app/services/sms_provider.py::get_sms_provider(). "mock" is the
+    # default so nothing breaks for anyone who pulls this milestone
+    # without setting new env vars.
+    email_provider: Literal["mock", "resend"] = Field("mock", alias="EMAIL_PROVIDER")
+    email_from_address: Optional[str] = Field(None, alias="EMAIL_FROM_ADDRESS")
     resend_api_key: Optional[str] = Field(None, alias="RESEND_API_KEY")
+    sms_provider: Literal["mock", "twilio"] = Field("mock", alias="SMS_PROVIDER")
     twilio_account_sid: Optional[str] = Field(None, alias="TWILIO_ACCOUNT_SID")
     twilio_auth_token: Optional[str] = Field(None, alias="TWILIO_AUTH_TOKEN")
     twilio_phone_number: Optional[str] = Field(None, alias="TWILIO_PHONE_NUMBER")
@@ -111,6 +119,14 @@ class Settings(BaseSettings):
             missing.append("AIRLINE_API_BASE_URL")
         if self.payment_provider == "stripe" and (not self.stripe_secret_key or not self.stripe_webhook_secret):
             missing.append("STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET (required when PAYMENT_PROVIDER=stripe)")
+        if self.email_provider == "resend" and (not self.resend_api_key or not self.email_from_address):
+            missing.append("RESEND_API_KEY / EMAIL_FROM_ADDRESS (required when EMAIL_PROVIDER=resend)")
+        if self.sms_provider == "twilio" and (
+            not self.twilio_account_sid or not self.twilio_auth_token or not self.twilio_phone_number
+        ):
+            missing.append(
+                "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER (required when SMS_PROVIDER=twilio)"
+            )
         if self.bootstrap_admin_enabled:
             missing.append(
                 "BOOTSTRAP_ADMIN_ENABLED must be false in production (§16) — "

@@ -1,6 +1,6 @@
 # Charter123 — Project State
 
-**Status: CANONICAL, current as of 2026-09-09 (T-4 session).** This is a
+**Status: CANONICAL, current as of 2026-09-09 (T-5 session).** This is a
 terse, subsystem-by-subsystem snapshot for fast lookup. For narrative,
 phase history, and contradictions, see `docs/PROJECT_ROADMAP.md` — that
 file is authoritative if this one ever drifts from it.
@@ -95,16 +95,23 @@ Each row: what exists → what's verified → what isn't.
 | Web routes (`/payments/sessions`, `/payments/status/{pnr}`, `/payments/refunds` (T-3), Stripe webhook receiver) | Written | Not executed |
 | Vapi tools `create_payment_session`/`get_payment_status` | Complete | ✅ argument mapping/confirmation-gating/no-LLM-amount tests |
 | `refund_payment` | **Complete (T-3)** — staff/admin-only REST route, NOT a Vapi tool by design (`STAFF_OR_ADMIN_ONLY` always denies `VAPI_AGENT`) | Written, reviewed; ✅ `test_authorization_entries_without_a_schema_are_exactly_staff_only` re-confirmed it correctly stays schema-less |
-| Payment-link delivery (email/SMS) | **Not built** | Deliberately deferred — see Phase 8, and `docs/PAYMENTS.md` §8's explicit instruction not to close this quietly |
+| Payment-link delivery (email/SMS) | **Complete (T-5)** — see Phase 8 below; `docs/PAYMENTS.md` §8's earlier "needs its own milestone with its own review" instruction was honored, not bypassed | Written, reviewed, cross-checked against live Resend/Twilio docs; content-builder logic executed (31 tests); provider HTTP calls themselves NOT executed — no network access |
 | Cancellation → real refund | **Complete (T-3)** — `CancellationService.cancel()` now calls `PaymentProvider.refund_payment()` for a `PAID` booking, using the airline's fee-adjusted `refundable_amount`; a provider failure leaves `payment_status="PAID"` (not falsely `"REFUNDED"`) and is recorded for manual staff follow-up via the new refund route | Written, reviewed — needs FastAPI/SQLAlchemy to execute; see `docs/PAYMENTS.md` §9 |
 | Refund-status-change webhook (Stripe `refund.updated`/`charge.refunded`) | **Not built** | Deliberately out of T-3's scope — a `pending`/`requires_action` refund result is recorded honestly but nothing resolves it later on its own; see `docs/PAYMENTS.md` §9's last bullet and §13 |
 
-## Notifications (Phase 8)
+## Notifications (Phase 8 — T-5, 2026-09-09)
 
-| Component | State |
-|---|---|
-| Email | `MockEmailProvider` only — **not a real delivery mechanism** |
-| SMS | **Does not exist at all** |
+| Component | State | Verified |
+|---|---|---|
+| `EmailProvider` interface | Extended (2 original methods unchanged; 2 new: `send_booking_confirmation`/`send_payment_link`) | ✅ `MockEmailProvider` — see Testing below |
+| Email — real provider | `ResendEmailProvider` (`app/services/email_provider.py`), selected via `EMAIL_PROVIDER=resend` | Written, cross-checked against live Resend API docs — never executed, no network access |
+| `SmsProvider` interface | New — one method, `send_payment_link` (booking confirmation stays email-only by design; see `docs/TASK_BOARD.md` T-5's "Decisions/deviations") | ✅ `MockSmsProvider` — see Testing below |
+| SMS — real provider | `TwilioSmsProvider` (`app/services/sms_provider.py`), selected via `SMS_PROVIDER=twilio` | Written, cross-checked against live Twilio API docs — never executed, no network access |
+| `NotificationService` (dispatch/audit orchestration) | Complete — best-effort, non-blocking by design; never a Vapi tool (MASTER_RULES §6) | Written, reviewed — needs SQLAlchemy to execute |
+| Content builders (`app/core/notifications/content.py`) | Complete — stdlib-only on purpose | ✅ 31 tests, `tests/test_notifications_core.py` |
+| Booking-confirmation wiring (`BookingService.create_booking`) | Complete — email only | Written, reviewed — needs SQLAlchemy to execute |
+| Payment-link wiring (`PaymentService.create_payment_session`) | Complete — email always, SMS when `call_id is not None` | Written, reviewed — needs SQLAlchemy to execute |
+| Known honest gap | Baggage allowance defaults to `CabinClass.ECONOMY` (Booking doesn't persist cabin class); cancellation-terms line is always generic (`Booking.cancellation_deadline` is never populated anywhere in this codebase — pre-existing, found not fixed) | Documented in `content.py`'s docstring, not silently assumed correct |
 
 ## Admin dashboard (Phase 9)
 
@@ -119,14 +126,15 @@ Each row: what exists → what's verified → what isn't.
 | Suite | Count | State |
 |---|---|---|
 | `tests/test_core_logic.py` | 30 | ✅ passing |
-| `tests/test_security_core.py` | 93 | ✅ passing |
-| `tests/test_vapi_core.py` | 56 | ✅ passing |
-| `tests/test_payments_core.py` | 46 (33 + 13 new for T-3's `refund_payment`) | ✅ passing |
-| **Total dependency-free** | **236 pass** | ✅ **re-executed and confirmed this session** (`python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api -v` → `OK (skipped=8)`) |
+| `tests/test_security_core.py` | 95 | ✅ passing (corrected this session from a stale "93" that predated this table's own claimed 236 total — the old per-file breakdown never actually summed to 236; re-counted by direct execution, not assumed) |
+| `tests/test_vapi_core.py` | 65 | ✅ passing (corrected this session from a stale "56", same reason as above) |
+| `tests/test_payments_core.py` | 46 (33 + 13 for T-3's `refund_payment`) | ✅ passing |
+| `tests/test_notifications_core.py` (T-5, new) | 31 | ✅ passing |
+| **Total dependency-free** | **267 pass** | ✅ **re-executed and confirmed this session** (`python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api tests.test_notifications_core -v` → `OK (skipped=8)`) |
 | `tests/test_api_security.py` | 18 methods, 6 classes | Written against real `TestClient`; skips cleanly here (no FastAPI) |
 | `tests/test_vapi_api.py` | 2 classes | Written; skips cleanly here |
 | `tests/{e2e,integration,voice}/` | 0 | Placeholders only — `README.md` in each, no test code |
-| `scripts/test_setup_vapi.py` (T-4, separate suite — repo-root `scripts/`, not `apps/api/tests/`; NOT part of the 236 above or `.github/workflows/t1-verify.yml`'s pinned baseline) | 24 | ✅ passing (`cd scripts && python3 -m unittest test_setup_vapi -v` → `OK`) |
+| `scripts/test_setup_vapi.py` (T-4, separate suite — repo-root `scripts/`, not `apps/api/tests/`; NOT part of the 267 above or `.github/workflows/t1-verify.yml`'s pinned baseline) | 24 | ✅ passing (`cd scripts && python3 -m unittest test_setup_vapi -v` → `OK`) |
 
 ## Known residual security/integrity findings (this audit — see roadmap §6.6 for detail)
 

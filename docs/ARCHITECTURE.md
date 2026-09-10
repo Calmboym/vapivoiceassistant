@@ -33,11 +33,16 @@ Flight search/quote/booking/cancel/modify (Phase 1-3), authentication/RBAC/
 security hardening (Phase 4), the Vapi webhook and tool layer (Phase 5),
 payment-session creation via Stripe Checkout (Phase 7 Milestone 1,
 labeled "Phase 6 Milestone 1" in its own handoff — see
-`docs/PROJECT_ROADMAP.md` §6.1 for why), and `refund_payment` (Phase 7
-remainder, T-3) are all built and covered by the dependency-free test
-suite. Not yet built: live telephony connection (the remainder of
-Phase 6), notifications (Phase 8), the admin dashboard (Phase 9), and the
-Playwright/E2E/voice test suites (Phase 10). See
+`docs/PROJECT_ROADMAP.md` §6.1 for why), `refund_payment` (Phase 7
+remainder, T-3), and email/SMS notifications for booking confirmation
+and payment-link delivery (Phase 8, T-5) are all built and covered by
+the dependency-free test suite. Not yet built: a real inbound phone call
+ever reaching this system (the remainder of Phase 6 — `scripts/
+setup_vapi.py`, T-4, automates the rest but has never been run against a
+live account), the admin dashboard (Phase 9), and the Playwright/E2E/
+voice test suites (Phase 10). Not yet verified: any
+of the above against a real Vapi/Stripe/Resend/Twilio account — this
+sandbox has never had network egress. See
 `docs/PRODUCTION_CHECKLIST.md` for the exact line-by-line status against
 the spec's 80-item "definition of done."
 

@@ -104,10 +104,13 @@ from app.schemas.passenger import ContactInfo, PassengerCreate
 from app.schemas.payment import PaymentSessionCreateRequest
 from app.services.booking_service import BookingService
 from app.services.cancellation_service import CancellationService
+from app.services.email_provider import get_email_provider
 from app.services.flight_service import FlightService
+from app.services.notification_service import NotificationService
 from app.services.passenger_service import PassengerService
 from app.services.payment_service import PaymentService
 from app.services.rate_limit_service import RedisRateLimitStore
+from app.services.sms_provider import get_sms_provider
 from app.services.verification_service import VerificationSessionService
 
 router = APIRouter(prefix="/api/v1/vapi", tags=["vapi"])
@@ -320,7 +323,12 @@ def _dispatch_create_booking(args: dict, *, db: Session, actor: CurrentActor, ca
         contact=ContactInfo(**args["contact"]),
         idempotency_key=args["idempotency_key"],
     )
-    service = BookingService(db, get_airline_provider(), get_idempotency_store())
+    # T-5 (Phase 8): notifier constructed and passed ONLY here + in
+    # _dispatch_create_payment_session below — see BookingService.
+    # __init__'s comment for why _dispatch_modify_booking just below
+    # stays unchanged (notifier=None, its default).
+    notifier = NotificationService(db, get_email_provider(), get_sms_provider())
+    service = BookingService(db, get_airline_provider(), get_idempotency_store(), notifier)
     booking = service.create_booking(request, actor=f"vapi_call:{call_id}", call_id=call_id)
     return f"Booked. Confirmation number {booking.pnr}. " + _booking_summary(booking)
 
@@ -363,20 +371,28 @@ def _dispatch_remove_passenger(args: dict, *, db: Session, actor: CurrentActor, 
 
 def _dispatch_create_payment_session(args: dict, *, db: Session, actor: CurrentActor, call_id: str) -> str:
     request = PaymentSessionCreateRequest(**args)
-    service = PaymentService(db, get_payment_provider(), get_idempotency_store())
+    # T-5 (Phase 8): notifier constructed and passed here — closes the
+    # gap docs/PAYMENTS.md §8 documented. also_sms is decided inside
+    # PaymentService.create_payment_session itself (call_id is not None
+    # for every Vapi-originated call, since it's always supplied here).
+    notifier = NotificationService(db, get_email_provider(), get_sms_provider())
+    service = PaymentService(db, get_payment_provider(), get_idempotency_store(), notifier)
     payment = service.create_payment_session(request, actor=f"vapi_call:{call_id}", call_id=call_id)
-    # The URL is returned as DATA for the assistant to work with — this
-    # string is what the LLM sees, not literally what gets read aloud to
-    # the caller (same as _booking_summary() above). It must not claim
-    # delivery: see tool_schemas.py's create_payment_session description,
-    # which explicitly instructs the assistant not to say this link has
-    # been sent — see docs/PAYMENTS.md "Known limitation: out-of-band
-    # delivery" for why that's a real, undelivered gap in this milestone,
-    # not a wording nitpick.
+    # The URL is still returned as DATA for the assistant to work with —
+    # this string is what the LLM sees, not literally what gets read
+    # aloud to the caller (same as _booking_summary() above). Unlike
+    # before T-5, the assistant CAN now tell the caller delivery is
+    # happening: PaymentService.create_payment_session emails the link
+    # (and additionally texts it, since this is a voice call) as a
+    # system-triggered side effect — see NotificationService's docstring
+    # for why this is best-effort and may occasionally fail silently
+    # server-side rather than something the assistant should promise as
+    # certain. See tool_schemas.py's create_payment_session description
+    # and docs/PAYMENTS.md §8 (now updated) for the full reasoning.
     return (
-        f"Payment link created for booking {payment.booking.pnr}, total {payment.amount} {payment.currency}: "
-        f"{payment.checkout_url} — this has NOT been sent to the caller yet. If they need it delivered now, "
-        f"offer a transfer to a team member."
+        f"Payment link created for booking {payment.booking.pnr}, total {payment.amount} {payment.currency}. "
+        f"It's being emailed and texted to the contact on file now — let the caller know to check their "
+        f"phone/inbox in a moment. Link (for your reference, not to read aloud): {payment.checkout_url}"
     )
 
 

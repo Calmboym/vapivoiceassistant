@@ -134,28 +134,59 @@ breakdown. 3.3/3.4 remain open.
 
 Corresponds to: original Master Build Prompt Phase 8.
 
+**Status: implementation done (T-5, 2026-09-09) — live provider execution
+BLOCKED on network egress + credentials, same as every other real-provider
+integration in this project. See `docs/TASK_BOARD.md`'s T-5 entry and
+`docs/handoffs/2026-09-09-t5-notifications.md` for the full account.**
+
 4.1. Implement a real email provider (Resend, per `.env.example`'s
      `RESEND_API_KEY`, or configurable SMTP) behind the existing
      `EmailProvider`-shaped interface `MockEmailProvider` already
      implements — don't change the interface shape without reason.
+     **DONE — Resend chosen over SMTP (see T-5's "Decisions/deviations");
+     `ResendEmailProvider` in `app/services/email_provider.py`, written
+     and cross-checked against Resend's live API docs, not executed (no
+     network egress in this sandbox).**
 4.2. Implement a real SMS provider (Twilio, per `.env.example`'s
      `TWILIO_*` variables) — this is new; no interface exists yet, so
      design one mirroring the email provider's shape.
+     **DONE — new `SmsProvider` Protocol + `TwilioSmsProvider` in the new
+     `app/services/sms_provider.py`, same execution caveat as 4.1.**
 4.3. Wire booking-confirmation delivery (spec §44: PNR, passenger names,
      itinerary, flight numbers, dates, baggage allowance, payment status,
      cancellation terms — **never passport numbers**).
+     **DONE, with one honest gap: `Booking.cancellation_deadline` is a
+     pre-existing column nothing in this codebase has ever populated, so
+     the cancellation-terms line is always the generic honest sentence
+     today, never a date — not a T-5 regression, a pre-existing gap this
+     task found and did not fix (out of scope). Baggage allowance
+     defaults to `CabinClass.ECONOMY` for the same reason (`Booking`
+     doesn't persist which cabin class was booked) — see
+     `app/core/notifications/content.py`'s docstring.**
 4.4. Wire payment-link delivery for `create_payment_session`'s Checkout
      URL — this is the fix for the gap `docs/PAYMENTS.md` §8 documents
      ("a phone caller who needs the link delivered has no path to
      receive it today except a human transfer").
+     **DONE — email always, SMS additionally when the session was
+     created during a live voice call (`call_id is not None`); see T-5's
+     "Decisions/deviations" #3 for why SMS isn't sent for every session.**
 
-**Dependencies:** email/SMS provider credentials.
+**Dependencies:** email/SMS provider credentials. **As of T-5: also real
+network egress — this sandbox has never had either at once.**
 
 **Exit criteria:** a real booking triggers a real email; a payment link
 can actually reach a caller who can't access a computer mid-call.
+**Both wired and dependency-free-tested this session (31 new tests in
+`tests/test_notifications_core.py`); "a real email/SMS actually arrives"
+specifically remains unverified — see T-5's Testing status.**
 
 **Security constraints:** never send passport numbers in a notification;
-redact/mask the same way voice responses already do.
+redact/mask the same way voice responses already do. **Enforced
+structurally in T-5, not by a runtime filter: `PassengerSummary`
+(`app/core/notifications/content.py`) has no passport-shaped field at
+all, so there is nothing for a content builder to accidentally include —
+see that module's docstring and `test_notifications_core.py`'s
+`test_passenger_summary_has_no_passport_shaped_field`.**
 
 ---
 

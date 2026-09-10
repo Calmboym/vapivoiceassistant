@@ -7,15 +7,20 @@ against a fully-featured `MockAirlineProvider` with zero external aviation
 credentials, and switching to a real GDS (Amadeus/Sabre) is a config
 change, not a rewrite. See `docs/AIRLINE_PROVIDER.md`.
 
-**Current status (corrected 2026-09-08 — T-3): Phases 1–5 of the build
+**Current status (corrected 2026-09-09 — T-5): Phases 1–5 of the build
 are complete (repo/infra → DB schema & mock provider → core booking
 flows → authentication/RBAC/security → Vapi voice integration), plus
 Phase 7 Milestone 1 (Stripe payment sessions — labeled "Phase 6
 Milestone 1" in its own handoff; see `docs/PROJECT_ROADMAP.md` §6.1 for
-why that label doesn't match the original spec's numbering) and
-`refund_payment` (T-3, the remainder of Phase 7). Still not built: live
-telephony connection (the rest of Phase 6), real email/SMS
-notifications, and the admin dashboard.** See
+why that label doesn't match the original spec's numbering),
+`refund_payment` (T-3), and Phase 8 notifications — real email (Resend)
+and SMS (Twilio) providers wired to booking-confirmation and
+payment-link delivery (T-5). `scripts/setup_vapi.py` (T-4) automates the
+rest of live telephony setup but has never been run against a real
+account. Still not built: a real inbound phone call ever reaching this
+system, and the admin dashboard. Still not verified: any of the above
+against a real Vapi/Stripe/Resend/Twilio account — this sandbox has
+never had network egress.** See
 `docs/PROJECT_ROADMAP.md` for the full reconciled status and
 `docs/PRODUCTION_CHECKLIST.md` for the exact, honest, line-by-line
 status — including which parts have been executed and verified versus
@@ -90,12 +95,13 @@ standard library:
 
 ```bash
 cd apps/api
-python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core -v
+python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_notifications_core -v
 ```
 
-This is **236 tests and they pass** — actually run, repeatedly, while
+This is **267 tests and they pass** — actually run, repeatedly, while
 building each phase (123 through Phase 4, +56 in Phase 5, +44 in Phase 6
-Milestone 1, +13 in T-3's `refund_payment`). Execution caught real bugs
+Milestone 1, +13 in T-3's `refund_payment`, +31 in T-5's Phase 8
+notifications). Execution caught real bugs
 each time, not just in Phase 1-3: a flight-ID parser that broke on
 ISO-date hyphens, an
 unrealistic flight-duration formula, an IDOR bug in the Phase 4
@@ -104,7 +110,8 @@ customer's booking, a mutable-object aliasing bug in the rate limiter, and
 a `cryptography` version pin that excluded the only versions with the
 Argon2id support Phase 4's password hashing depends on. See the top of
 `tests/test_core_logic.py`, `tests/test_security_core.py`,
-`tests/test_vapi_core.py`, `tests/test_payments_core.py`, and
+`tests/test_vapi_core.py`, `tests/test_payments_core.py`,
+`tests/test_notifications_core.py`, and
 `PROJECT_HANDOFF_PHASE_4.md` §5 for the full bug list.
 
 Once you've `pip install -r requirements.txt`'d, the rest of the test
@@ -129,15 +136,18 @@ fallback is appropriate for production — see `docs/ARCHITECTURE.md`.
 
 ## What's next
 
-**Corrected 2026-09-08** — this section previously described the Vapi
-layer, Stripe payments, and `refund_payment` as future work; all three
-are now built (see "Current status" above). Read
+**Corrected 2026-09-09** — this section previously described the Vapi
+layer, Stripe payments, `refund_payment`, and notifications as future
+work; all four are now built (see "Current status" above). Read
 `docs/PROJECT_ROADMAP.md` §7/§8 for the current, accurate execution plan
 and position; short version: get the FastAPI/SQLAlchemy test layer
 actually running somewhere with network access (nothing in that layer
-has ever been executed, including T-3's refund changes), then either
-connect a real phone number (the remaining piece of Phase 6) or start
-Phase 8 (notifications) — neither blocks the other. **Read
+has ever been executed, including T-3's refund changes and T-5's
+notification changes), then either run `scripts/setup_vapi.py --apply`
+against a real Vapi account (the remaining piece of Phase 6/T-4), set
+real Resend/Twilio credentials and confirm a real email/SMS arrives
+(the remaining piece of T-5), or start Phase 9 (admin dashboard) — none
+of these block each other. **Read
 `docs/SESSION_PROMPT.md` before starting any new session** — it replaces
 the old advice to read
 a specific phase handoff, since which handoff is "latest" now changes

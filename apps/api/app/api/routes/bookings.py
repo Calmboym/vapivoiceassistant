@@ -30,7 +30,10 @@ from app.schemas.common import ok
 from app.schemas.passenger import PassengerOut
 from app.services.booking_service import BookingService
 from app.services.cancellation_service import CancellationService
+from app.services.email_provider import get_email_provider
+from app.services.notification_service import NotificationService
 from app.services.rate_limit_service import RedisRateLimitStore
+from app.services.sms_provider import get_sms_provider
 from app.services.verification_service import VerificationSessionService
 
 router = APIRouter(prefix="/api/v1/bookings", tags=["bookings"])
@@ -89,7 +92,12 @@ def _actor_label(actor: CurrentActor, call_id: str | None) -> str:
 
 @router.post("")
 def create_booking(body: BookingCreateRequest, request: Request, db: Session = Depends(get_db)):
-    service = BookingService(db, get_airline_provider(), get_idempotency_store())
+    # T-5 (Phase 8): notifier constructed and passed ONLY here — see
+    # BookingService.__init__'s comment for why the other four
+    # BookingService(...) construction sites in this file/vapi.py stay
+    # unchanged (notifier=None, its default).
+    notifier = NotificationService(db, get_email_provider(), get_sms_provider())
+    service = BookingService(db, get_airline_provider(), get_idempotency_store(), notifier)
     call_id = request.headers.get("x-charter123-call-id")
     actor = f"vapi_call:{call_id}" if call_id else "web_client"
     booking = service.create_booking(body, actor=actor, call_id=call_id, request_id=request.state.request_id)

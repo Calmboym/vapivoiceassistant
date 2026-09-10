@@ -54,7 +54,10 @@ from app.schemas.payment import (
     RefundCreateRequest,
     RefundOut,
 )
+from app.services.email_provider import get_email_provider
+from app.services.notification_service import NotificationService
 from app.services.payment_service import PaymentService
+from app.services.sms_provider import get_sms_provider
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
@@ -113,7 +116,13 @@ def create_payment_session(
         actor, booking=booking, required_permission=Permission.PAYMENTS_CREATE.value
     )
 
-    service = PaymentService(db, get_payment_provider(), get_idempotency_store())
+    # T-5 (Phase 8): notifier constructed and passed ONLY here — see
+    # PaymentService.__init__'s comment for why the other three
+    # PaymentService(...) construction sites in this file/vapi.py (plus
+    # CancellationService's internally-composed instance) stay unchanged
+    # (notifier=None, its default).
+    notifier = NotificationService(db, get_email_provider(), get_sms_provider())
+    service = PaymentService(db, get_payment_provider(), get_idempotency_store(), notifier)
     payment = service.create_payment_session(
         body, actor=_actor_label(effective_actor), request_id=request.state.request_id,
     )

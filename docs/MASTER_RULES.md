@@ -137,7 +137,9 @@ summary, not a replacement.
   file you touched — `docs/PROJECT_ROADMAP.md`'s exact command is:
   `cd apps/api && python3 -m unittest tests.test_core_logic
   tests.test_security_core tests.test_vapi_core tests.test_payments_core
-  tests.test_api_security tests.test_vapi_api -v`
+  tests.test_api_security tests.test_vapi_api tests.test_notifications_core -v`
+  (`tests.test_notifications_core` added 2026-09-09, T-5 — 267 tests
+  total, 8 skips, as of that session).
 
 ## 8. Documentation discipline
 

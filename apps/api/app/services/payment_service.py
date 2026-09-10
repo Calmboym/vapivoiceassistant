@@ -80,6 +80,7 @@ from app.repositories.booking_repository import BookingRepository
 from app.repositories.payment_repository import PaymentRepository
 from app.schemas.payment import PaymentSessionCreateRequest, RefundCreateRequest
 from app.services.audit_service import record_audit_event
+from app.services.notification_service import NotificationService
 
 # Refund.status values that mean the provider explicitly could NOT
 # complete this refund (as opposed to PENDING/REQUIRES_ACTION, which
@@ -88,12 +89,28 @@ _TERMINAL_FAILED_REFUND_STATUSES = frozenset({RefundStatus.FAILED, RefundStatus.
 
 
 class PaymentService:
-    def __init__(self, db: Session, provider: PaymentProvider, idempotency: IdempotencyStore):
+    def __init__(
+        self,
+        db: Session,
+        provider: PaymentProvider,
+        idempotency: IdempotencyStore,
+        notifier: Optional[NotificationService] = None,
+    ):
         self.db = db
         self.provider = provider
         self.idempotency = idempotency
         self.bookings = BookingRepository(db)
         self.payments = PaymentRepository(db)
+        # T-5 (Phase 8): optional on purpose, default None — same reason
+        # as BookingService's own notifier param (see that class). Only
+        # create_payment_session() below ever uses it; every other
+        # PaymentService(...) construction (status lookup, refund, the
+        # Stripe webhook receiver, and CancellationService's internally-
+        # composed instance) is deliberately left unchanged rather than
+        # forced to thread a notifier they'd never call. A None notifier
+        # means create_payment_session() skips the payment-link delivery
+        # side effect — the exact pre-T-5 behavior, never an error.
+        self.notifier = notifier
 
     # ------------------------------------------------------------ create
 
@@ -192,6 +209,27 @@ class PaymentService:
             )
             self.db.commit()
             self.idempotency.complete(request.idempotency_key, {"payment_id": str(payment.id)})
+
+            # T-5 (Phase 8, WBS-4.4): payment-link delivery — closes the
+            # gap docs/PAYMENTS.md §8 documented ("a phone caller who
+            # needs the link delivered has no path to receive it today
+            # except a human transfer"). A SYSTEM-triggered side effect
+            # on an already-committed Payment, never a step this method's
+            # own success depends on — see NotificationService's
+            # docstring for the full non-blocking design reasoning.
+            # also_sms=(call_id is not None): email always; SMS
+            # additionally only for a live voice call, the scenario the
+            # gap above is actually about — a web caller already has the
+            # checkout_url on screen (see _payment_out()'s docstring in
+            # app/api/routes/payments.py), so this doesn't change that
+            # flow's behavior beyond an extra confirmation email, exactly
+            # like any normal e-commerce checkout receipt.
+            if self.notifier is not None:
+                try:
+                    self.notifier.send_payment_link(booking, payment, also_sms=(call_id is not None))
+                except Exception:
+                    pass
+
             return payment
         except Exception:
             self.db.rollback()

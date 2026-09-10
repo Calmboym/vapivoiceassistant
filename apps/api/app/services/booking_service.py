@@ -6,23 +6,40 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotFoundError, ValidationFailedError, VerificationFailedError
 from app.core.idempotency import IdempotencyStore
+from app.core.notifications.content import BaggageAllowance
 from app.core.pnr import generate_unique_pnr
 from app.models.booking import Booking, BookingPassenger
-from app.providers.airline.base import AirlineProvider, PassengerInput
+from app.providers.airline.base import AirlineProvider, CabinClass, PassengerInput, ProviderError
 from app.repositories.booking_repository import BookingRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.schemas.booking import BookingCreateRequest, BookingModifyRequest
 from app.services.audit_service import record_audit_event
+from app.services.notification_service import NotificationService
 from app.services.verification_service import BookingVerificationService
 
 
 class BookingService:
-    def __init__(self, db: Session, provider: AirlineProvider, idempotency: IdempotencyStore):
+    def __init__(
+        self,
+        db: Session,
+        provider: AirlineProvider,
+        idempotency: IdempotencyStore,
+        notifier: Optional[NotificationService] = None,
+    ):
         self.db = db
         self.provider = provider
         self.idempotency = idempotency
         self.bookings = BookingRepository(db)
         self.customers = CustomerRepository(db)
+        # T-5 (Phase 8): optional on purpose, default None — only the
+        # create_booking() path below ever uses it. lookup/modify never
+        # trigger a notification, so their call sites (three of the five
+        # BookingService(...) constructions in app/api/routes/bookings.py
+        # + app/api/routes/vapi.py) are deliberately left unchanged rather
+        # than forced to thread a notifier they'd never use. A None
+        # notifier simply means create_booking() skips the confirmation
+        # side effect — the exact pre-T-5 behavior — never an error.
+        self.notifier = notifier
 
     # ------------------------------------------------------------ create
 
@@ -108,6 +125,41 @@ class BookingService:
             self.db.commit()
 
             self.idempotency.complete(request.idempotency_key, {"pnr": pnr})
+
+            # T-5 (Phase 8, WBS-4.3): booking-confirmation notification —
+            # a SYSTEM-triggered side effect on an already-committed,
+            # already-true booking, never a step the mutation above
+            # depends on. Runs AFTER commit()/idempotency.complete() so a
+            # notification problem can never affect whether the booking
+            # itself succeeded. self.notifier is None unless the caller
+            # explicitly wired one in (see __init__ above) — most callers
+            # (lookup/modify) never do, and that's fine, not an error.
+            #
+            # Broad except is deliberate defense-in-depth on top of
+            # NotificationService's own internal try/except (see that
+            # class's docstring) — this outer layer also catches a bug in
+            # content-building itself (not just a provider failure),
+            # which must equally never surface as a failed booking.
+            if self.notifier is not None:
+                try:
+                    baggage = None
+                    try:
+                        rules = self.provider.get_baggage_rules(
+                            CabinClass.ECONOMY, aircraft_type=booking.aircraft_type
+                        )
+                        baggage = BaggageAllowance(
+                            checked_bags_included=rules.checked_bags_included,
+                            checked_bag_max_kg=rules.checked_bag_max_kg,
+                            cabin_bag_max_kg=rules.cabin_bag_max_kg,
+                        )
+                    except ProviderError:
+                        # Honest omission, not a fabricated number — see
+                        # app/core/notifications/content.py's docstring.
+                        baggage = None
+                    self.notifier.send_booking_confirmation(booking, baggage=baggage)
+                except Exception:
+                    pass
+
             return booking
         except Exception:
             self.db.rollback()

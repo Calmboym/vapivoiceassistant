@@ -50,10 +50,13 @@ jobs:
         # guaranteed to resolve the same way release to release. Reading the
         # installed distribution's metadata is stable regardless of what the
         # package internally exposes, and still proves the import succeeded.
+        # `httpx` added 2026-09-09 (T-5) — ResendEmailProvider/
+        # TwilioSmsProvider both lazily import it the same way
+        # StripePaymentProvider lazily imports `stripe`.
         run: |
           python3 -c "
           import importlib.metadata as m
-          for pkg in ['fastapi', 'sqlalchemy', 'pydantic', 'stripe']:
+          for pkg in ['fastapi', 'sqlalchemy', 'pydantic', 'stripe', 'httpx']:
               __import__(pkg)
               print(f'{pkg} imports OK — installed version: {m.version(pkg)}')
           "
@@ -72,13 +75,14 @@ jobs:
             tests.test_payments_core \
             tests.test_api_security \
             tests.test_vapi_api \
+            tests.test_notifications_core \
             -v > /tmp/test_output.log 2>&1 || true
           cat /tmp/test_output.log
 
       - name: Deterministically verify test count, zero skips, and a clean OK
         # Stronger than grepping for one known skip-reason string: this
         # parses unittest's own summary line and asserts (1) the test COUNT
-        # is unchanged from the established 223-test baseline — if it isn't,
+        # is unchanged from the established baseline — if it isn't,
         # fail loudly and require investigation rather than silently
         # accepting a different number: (2) zero skips of ANY kind, not just
         # the one previously-known "FastAPI/SQLAlchemy stack not installed"
@@ -99,7 +103,15 @@ jobs:
               sys.exit(1)
           ran = int(m.group(1))
 
-          EXPECTED = 223
+          # 223 at T-1's original writing -> 236 after T-3's refund_payment
+          # (2026-09-08) -> 267 after T-5's notifications (2026-09-09,
+          # +31 in the new tests.test_notifications_core). NOTE: this value
+          # was found STALE at 223 (not 236) when T-5 started, even though
+          # T-3 had already raised the real count to 236 the day before —
+          # fixed as part of T-5 rather than left for someone else to trip
+          # over; see docs/PROJECT_STATE.md's own note about the same
+          # per-file drift found in that doc at the same time.
+          EXPECTED = 267
           if ran != EXPECTED:
               print(f"::error::Expected exactly {EXPECTED} tests (the established "
                     f"baseline recorded in docs/TASK_BOARD.md) but {ran} ran. "
@@ -159,6 +171,8 @@ jobs:
           BOOTSTRAP_ADMIN_ENABLED=false
           AIRLINE_PROVIDER=mock
           PAYMENT_PROVIDER=mock
+          EMAIL_PROVIDER=mock
+          SMS_PROVIDER=mock
           FRONTEND_URL=http://localhost:3000
           CORS_ORIGINS=http://localhost:3000
           NEXT_PUBLIC_API_URL=http://localhost:8000

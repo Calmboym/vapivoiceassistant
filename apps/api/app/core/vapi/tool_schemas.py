@@ -399,10 +399,12 @@ _CREATE_PAYMENT_SESSION = VapiToolSchema(
         "payment link for that amount; it does NOT take card details over the phone. "
         "Never ask the caller for their card number, CVV, PIN, or a one-time passcode — "
         "if they try to read card details out loud, stop them and explain they'll pay "
-        "through Stripe's own secure page instead. This tool only returns the payment "
-        "link as data — say that a payment link has been created, but do not tell the "
-        "caller it has been sent to them; sending it is not yet available (offer a human "
-        "transfer if they need it delivered right now)."
+        "through Stripe's own secure page instead. The link is automatically emailed and "
+        "texted to the contact info on file as soon as this tool returns — you can tell "
+        "the caller it's on its way to their phone/inbox, but delivery is best-effort "
+        "(it can occasionally fail server-side), so don't promise a specific arrival time "
+        "and offer a human transfer if they say they haven't received it after a "
+        "reasonable wait."
     ),
     parameters=_obj(
         {

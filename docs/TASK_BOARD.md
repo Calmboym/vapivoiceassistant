@@ -378,6 +378,218 @@ dependency).
 
 ---
 
+### T-5 — Phase 8: notifications
+- **Status:** AUTHORIZED — moved from Proposed to Authorized on the
+  project owner's explicit instruction, 2026-09-09 (this session), same
+  mechanism T-4 used. Implementation done this session; live Resend/
+  Twilio execution against real accounts is **BLOCKED**, same class as
+  T-1/T-4 — this sandbox has no network egress (re-confirmed this
+  session: `httpx` is not installed here either, so the question of
+  reaching `api.resend.com`/`api.twilio.com` is moot regardless) and no
+  real `RESEND_API_KEY`/`TWILIO_*` credentials exist in it.
+- **Scope:** A real email provider (Resend) and a real SMS provider
+  (Twilio), wired to booking-confirmation and payment-link delivery.
+  Replaces `MockEmailProvider` with a real implementation behind the
+  same interface; designs a new, sibling `SmsProvider` interface for SMS
+  (none existed before this task) — do not change either interface's
+  shape beyond what this task's own two new email methods and one new
+  SMS method require.
+- **NOT in scope:** admin dashboard (T-6); SMTP as a second email
+  provider (the original WBS-4.1 wording said "Resend or SMTP" — Resend
+  was chosen, SMTP was not built; see "Decisions/deviations" below);
+  adding `cabin_class` to the `Booking` model to get an exact per-fare
+  baggage figure (see "Known gap this task did not fix," below — an
+  honest simplification instead, not scope creep into a schema change).
+- **Depends on:** provider credentials (still true, per the original
+  Proposed-section wording) — and, as of this session, also real network
+  egress, which no sandbox this project has run in has ever had.
+- **Authorized by:** project owner, 2026-09-09 (this session, explicit
+  instruction to "Execute and authorize T-5").
+- **What was built:**
+  - `app/core/notifications/content.py` (NEW) — dependency-free content
+    builders for both notification types. Stdlib-only on purpose (no
+    SQLAlchemy/FastAPI import) so the actually risky part of this
+    feature — what text goes out to a real customer — gets real,
+    executed test coverage in this sandbox, the same way
+    `MockPaymentProvider`'s refund math did in T-3. Two structural
+    guarantees enforced here, not as a runtime check: (1) `PassengerSummary`
+    has no passport-shaped field at all, so a booking-confirmation email
+    cannot leak one; (2) `cancellation_deadline`/`baggage` are both
+    `Optional` and the builders emit an honest generic sentence, never a
+    guessed number, when either is unavailable (§1: "If the backend
+    doesn't have it, say so honestly").
+  - `app/services/email_provider.py` (EXTENDED) — `EmailProvider`'s
+    original two methods (`send_password_reset`/`send_email_verification`,
+    unchanged) plus two new ones (`send_booking_confirmation`/
+    `send_payment_link`); `MockEmailProvider` extended to match;
+    `EmailDeliveryError` (code/message/retryable) added; new
+    `ResendEmailProvider` — real HTTP calls to `POST
+    https://api.resend.com/emails` over lazily-imported `httpx`, using
+    the `Idempotency-Key` header the same way `StripePaymentProvider`
+    already forwards idempotency to Stripe. Resend's request/response/
+    error shapes were fetched from Resend's own current API reference
+    this session (`resend.com/docs/api-reference/emails/send-email`),
+    not assumed from training data.
+  - `app/services/sms_provider.py` (NEW) — `SmsProvider` Protocol (one
+    method, `send_payment_link` — see "NOT in scope" above for why
+    booking confirmation stays email-only); `MockSmsProvider`;
+    `SmsDeliveryError`; `TwilioSmsProvider` — real HTTP calls to `POST
+    .../Messages.json` over lazily-imported `httpx`, HTTP Basic Auth,
+    the `I-Twilio-Idempotency-Token` header. Twilio's request/response/
+    error shapes were fetched from Twilio's own current API reference
+    this session (`twilio.com/docs/messaging/api/message-resource`), not
+    assumed from training data.
+  - `app/services/notification_service.py` (NEW) — `NotificationService`,
+    the one place notification-dispatch logic lives (mirrors
+    `PaymentService`'s own framing of itself). Converts ORM
+    `Booking`/`Payment`/`BookingPassenger` objects into
+    `content.py`'s plain dataclasses, dispatches to whichever
+    email/SMS provider it was constructed with, and audits the outcome
+    either way (`notification.{booking_confirmation,payment_link}_{sent,failed}`).
+    Every public method catches its own provider's error type and NEVER
+    re-raises — this is a SYSTEM-triggered side effect, never a step the
+    booking/payment mutation that already succeeded depends on, and
+    never a Vapi tool (MASTER_RULES.md §6 forbids exactly that).
+  - `app/services/booking_service.py` / `app/services/payment_service.py`
+    (EXTENDED) — both gained an `notifier: Optional[NotificationService]
+    = None` constructor parameter, deliberately optional/defaulted so
+    only the two call sites that actually create something (`create_
+    booking`, `create_payment_session`) needed updating; the other
+    `BookingService`/`PaymentService` construction sites in
+    `bookings.py`/`payments.py`/`vapi.py`, and `CancellationService`'s
+    internally-composed `PaymentService`, are UNCHANGED (`notifier`
+    simply stays `None` there — the exact pre-T-5 behavior, not an
+    error). `create_booking()` additionally looks up baggage via
+    `self.provider.get_baggage_rules(CabinClass.ECONOMY,
+    aircraft_type=...)` — `CabinClass.ECONOMY` because `Booking` does
+    not persist which cabin class was actually booked (see "Known gap
+    this task did not fix," below); on any `ProviderError` the baggage
+    line is honestly omitted, never guessed.
+  - `app/api/routes/bookings.py`, `app/api/routes/payments.py`,
+    `app/api/routes/vapi.py` (EXTENDED) — the two creating routes/
+    dispatch functions (`create_booking` x2, `create_payment_session`
+    x2) now construct a `NotificationService` and pass it through.
+    `PaymentService.create_payment_session`'s `also_sms` flag is
+    `call_id is not None` — email always, SMS additionally only for a
+    live voice call, which is the exact scenario `docs/PAYMENTS.md` §8
+    documented as broken ("a phone caller who needs the link delivered
+    has no path to receive it today except a human transfer").
+  - `app/core/vapi/tool_schemas.py` — `create_payment_session`'s
+    description rewritten: it previously instructed the assistant to
+    say a link exists but explicitly NOT say it had been sent; it now
+    says delivery is automatic and best-effort, matching the new
+    reality. `vapi.py`'s `_dispatch_create_payment_session` return
+    string updated the same way. No test asserted the old wording
+    verbatim (checked before editing) — none needed updating as a
+    result.
+  - `app/core/config.py` / `.env.example` — `EMAIL_PROVIDER` (mock |
+    resend) / `EMAIL_FROM_ADDRESS`, `SMS_PROVIDER` (mock | twilio),
+    mirroring `AIRLINE_PROVIDER`/`PAYMENT_PROVIDER`'s exact mock/real
+    split; `validate_for_production()` extended to require
+    `RESEND_API_KEY`+`EMAIL_FROM_ADDRESS` when `EMAIL_PROVIDER=resend`
+    and all three `TWILIO_*` values when `SMS_PROVIDER=twilio`. Both
+    default to `mock` — nothing changes for anyone who doesn't set the
+    new env vars.
+  - `tests/test_notifications_core.py` (NEW) — 31 dependency-free tests:
+    content-builder correctness (PNR/names/route/price/status present;
+    passenger dataclass structurally has no passport field; the word
+    "passport" never appears in generated text; unknown cancellation
+    deadline/baggage produce the honest generic sentence with no
+    fabricated number, known values are reported exactly), both Mock
+    providers, and both `*DeliveryError` types.
+- **Decisions/deviations from the original Proposed-section wording,
+  recorded rather than silently made:**
+  1. **Resend, not SMTP** — WBS-4.1 offered either. Resend was chosen
+     because it has a simple, well-documented REST API needing no new
+     dependency beyond `httpx` (already required); a generic SMTP
+     provider would need `smtplib`/`aiosmtplib` and real mail-server
+     credentials this project has never had reason to configure
+     anywhere else. Not built; can be added later behind the same
+     `EmailProvider` interface if the project owner prefers it.
+  2. **`notifier` is optional, not a required constructor arg** — unlike
+     T-3's `payment_provider` on `CancellationService` (required,
+     because refund correctness is a security/money invariant every
+     caller must supply), a missing notifier here just means "no
+     confirmation sent," identical to every session before this one.
+     Making it optional avoided forcing every non-creating
+     `BookingService`/`PaymentService` construction site — and
+     `CancellationService`'s internal one — to thread a dependency they
+     would never use. This is a deliberate, narrower-blast-radius choice
+     than T-3's, not an inconsistency; see
+     `app/services/booking_service.py`/`payment_service.py`'s own
+     constructor comments.
+  3. **SMS only for payment links created during a live voice call, not
+     every payment link** — WBS-4.4's own exit criterion is specifically
+     "a payment link can actually reach a caller who can't access a
+     computer mid-call." A web-created session's browser already has
+     `checkout_url` on screen (see `_payment_out()`'s docstring in
+     `app/api/routes/payments.py`); texting it too wasn't asked for and
+     risked feeling unsolicited. Email is sent for every payment link
+     regardless of channel — an unsolicited confirmation email is
+     standard e-commerce practice; an unsolicited SMS is a different,
+     more intrusive thing.
+- **Known gap this task did not fix, found and left alone on purpose:**
+  `Booking.cancellation_deadline` is a pre-existing, nullable column that
+  nothing in this codebase has ever populated (`create_booking`/
+  `modify_booking` never set it) — confirmed by grep before writing any
+  content-builder logic, not assumed. The booking-confirmation email's
+  cancellation-terms line therefore always renders the honest generic
+  sentence today, never a date, through no fault of this task — fixing
+  it (deciding when/how a deadline gets set) is a booking-service change
+  outside T-5's scope and is **NOT** claimed as fixed here. Similarly,
+  `Booking` does not persist which cabin class was booked, so this
+  task's baggage lookup defaults to `CabinClass.ECONOMY` rather than the
+  fare actually purchased — documented in `app/core/notifications/
+  content.py` and `app/services/notification_service.py`'s docstrings,
+  not silently assumed correct.
+- **Testing status (§7 — stated exactly, not rounded up):**
+  - **Verified locally, this session:** `cd apps/api && python3 -m
+    unittest tests.test_core_logic tests.test_security_core
+    tests.test_vapi_core tests.test_payments_core tests.test_api_security
+    tests.test_vapi_api tests.test_notifications_core -v` → `OK`, 267
+    tests, 0 failures, 0 errors, skipped=8 (the same 8 as before —
+    `test_api_security.py`/`test_vapi_api.py`'s skip behavior is
+    unchanged by this task). 236 pre-existing + 31 new, all new tests
+    passing. Also independently confirmed via plain `python3 -c
+    "import ..."` that `app.services.email_provider`,
+    `app.services.sms_provider`, and `app.core.notifications.content`
+    all import cleanly with neither `httpx` nor `sqlalchemy` installed
+    in this sandbox, and that `app.services.notification_service`
+    correctly does NOT (raises `ModuleNotFoundError: No module named
+    'sqlalchemy'`, same as every other `app/services/*.py` file) — both
+    checked by running them, not asserted from reading the code.
+  - **Written, reviewed, cross-checked against live provider docs fetched
+    this session, NOT executed:** `ResendEmailProvider`,
+    `TwilioSmsProvider`, and every code path inside `BookingService`/
+    `PaymentService`/`NotificationService`/the three edited routes that
+    needs SQLAlchemy or FastAPI (not installed here) — same standing
+    constraint as literally every other service-layer file in this
+    project (T-1's Attempt log; unchanged this session, re-confirmed:
+    `pip install httpx` still returns `403`).
+  - **Requires external verification / BLOCKED, same class as T-1/T-4:**
+    - A real `RESEND_API_KEY` + verified sending domain, and a real send
+      against `POST https://api.resend.com/emails`, confirming the
+      request/response shapes documented above against Resend's actual
+      behavior rather than only its documentation.
+    - A real `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/a purchased,
+      SMS-capable `TWILIO_PHONE_NUMBER`, and a real send against `POST
+      .../Messages.json`, same reasoning.
+    - An end-to-end run of `create_booking`/`create_payment_session`
+      with `EMAIL_PROVIDER=resend`/`SMS_PROVIDER=twilio` against a real
+      Postgres database (needs the still-BLOCKED T-1 dependency stack
+      too) to confirm the full wiring, not just each piece in isolation.
+- **Remaining to close this task:** a project owner (or CI) with real
+  network access needs to: set `RESEND_API_KEY`/`EMAIL_FROM_ADDRESS`
+  and/or `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_PHONE_NUMBER`
+  in the environment; flip `EMAIL_PROVIDER=resend`/`SMS_PROVIDER=twilio`;
+  install `httpx` (already a listed dependency) and the rest of
+  `requirements.txt` per T-1; run the full test suite once more in that
+  real environment; then create one real test booking and one real test
+  payment session end to end and confirm an actual email/SMS arrives
+  with the expected content.
+
+---
+
 ## Proposed (not yet authorized)
 
 ### T-2 — Decide the Phase 6/7 numbering question
@@ -390,15 +602,6 @@ dependency).
   frozen regardless of the decision (see `docs/PROJECT_ROADMAP.md` §2,
   source-of-truth item 9).
 - **Depends on:** nothing technical — a product/planning call.
-
-### T-5 — Phase 8: notifications
-- **Scope:** A real email provider (Resend or SMTP) and a real SMS
-  provider (Twilio), wired to booking-confirmation and payment-link
-  delivery. Replaces `MockEmailProvider` with a real implementation
-  behind the same interface — do not change the interface shape without
-  reason.
-- **NOT in scope:** admin dashboard (T-6).
-- **Depends on:** provider credentials.
 
 ### T-6 — Phase 9: admin dashboard
 - **Scope:** `/api/v1/admin`, `/api/v1/customers`, `/api/v1/calls` API
