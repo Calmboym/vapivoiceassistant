@@ -46,15 +46,28 @@ already delivered as Phase 5's Vapi tool logic — see roadmap §6.1).
      create/update the Assistant, configure the webhook server URL +
      shared secret, attach tools, optionally attach a phone number.
      Read from environment variables; never hard-code an assistant ID.
+     **DONE, 2026-09-09 (T-4).** Written; 24 dependency-free tests pass
+     (`scripts/test_setup_vapi.py`); never run against a real account —
+     see `docs/TASK_BOARD.md` T-4.
 2.2. Configure a native Vapi `transferCall` tool per `docs/VAPI.md`'s
      "Transfer to human" section; attach it alongside the custom tools.
-2.3. Connect a real phone number to the Assistant.
+     **Automated by 2.1's script, 2026-09-09 (T-4)** — if a destination
+     number is supplied (`--transfer-number`/`VAPI_TRANSFER_NUMBER`),
+     `setup_vapi.py` creates/updates this tool and includes it in
+     `model.toolIds`. Same execution caveat as 2.1: never run against a
+     real account, so this step is written, not verified.
+2.3. Connect a real phone number to the Assistant. **Still BLOCKED** —
+     needs a live Vapi account; `setup_vapi.py` will do the `PATCH
+     /phone-number/{id}` call once `VAPI_PHONE_NUMBER_ID` is set, but
+     acquiring/importing the number itself is a dashboard action outside
+     this script's scope.
 2.4. Place one real inbound test call; verify `Call`/`ToolExecution` rows
      are created correctly and `endedReason` is captured on
-     `end-of-call-report`.
+     `end-of-call-report`. **Still BLOCKED** — needs a live call.
 2.5. Verify `transfer_to_human` → native transfer end-to-end (this is
      the one behavior `docs/VAPI.md` marks "PARTIALLY IMPLEMENTED —
      EXTERNAL VAPI VERIFICATION REQUIRED"; this closes it for real).
+     **Still BLOCKED** — needs a live call.
 
 **Dependencies:** WBS-1 recommended first (HTTP layer should be known-
 working before adding a live external caller to it). A live Vapi account.

@@ -265,6 +265,117 @@ dependency).
     `pending` status split actually behaves as the Refunds API reference
     describes) — cannot be exercised until T-1's environment exists.
 
+### T-4 — Phase 6 remainder: telephony
+- **Status:** AUTHORIZED — `scripts/setup_vapi.py` (WBS-2.1) written and
+  its dependency-free logic executed this session; WBS-2.2 through 2.5 (a
+  real number, a real inbound call, live `transferCall` verification)
+  remain **BLOCKED** on the same external dependency the scope always
+  named — a live Vapi account — compounded by this sandbox's standing
+  no-network-egress constraint (see T-1's Attempt log; re-confirmed
+  independently this session, not assumed from T-1's record).
+- **Scope:** `scripts/setup_vapi.py` (spec §51: create/update tools,
+  create/update assistant, configure webhook, attach a phone number);
+  connect a real number; one real inbound test call; configure the
+  native `transferCall` tool per `docs/VAPI.md`'s instructions.
+- **NOT in scope:** any change to existing tool logic — this is
+  configuration/scripting only, on top of what Phase 5 already built.
+- **Depends on:** a live Vapi account.
+- **Authorized by:** project owner, 2026-09-09 (this session — moved
+  from Proposed to Authorized on explicit instruction. WBS-2's own
+  "Dependencies: WBS-1 recommended first" note was not satisfied — T-1 is
+  still BLOCKED — flagged here rather than silently ignored, but not
+  treated as a hard blocker for authorization, since T-4's own listed
+  dependency is a live Vapi account, not T-1, and the owner authorized
+  proceeding anyway.)
+- **What was built:**
+  - `scripts/setup_vapi.py` (WBS-2.1) — idempotent create-or-update for
+    all 21 `app.core.vapi.tool_schemas.VAPI_TOOL_SCHEMAS` function tools,
+    the native `transferCall` tool (only if a destination number is
+    supplied), the Assistant (`model.toolIds` + a system prompt read
+    directly from `docs/VAPI.md`'s own "Suggested system prompt" section
+    at runtime, so the two can never silently drift), and phone-number
+    attachment. Every Vapi API shape used (`POST`/`GET`/`PATCH /tool`,
+    `POST`/`PATCH /assistant`, `PATCH /phone-number/{id}`, the
+    `server.secret`/`server.credentialId` authentication split) was
+    fetched from docs.vapi.ai this session — not assumed from training
+    data, which predates Vapi's current Custom Credentials system.
+  - **New finding, cross-checked, does not contradict existing code:**
+    Vapi's current documentation describes a dashboard-managed "Custom
+    Credentials" system as the primary webhook-auth mechanism now, with
+    the older inline `server.secret` field kept working under an
+    explicit "Migration from Inline Authentication" compatibility note.
+    This matches — does not contradict — what
+    `app/core/security/vapi_webhook_auth.py`'s own docstring already
+    independently recorded (dated "September 2026"). No public API
+    endpoint for creating a Custom Credential was found anywhere in
+    Vapi's API reference resource list — every source describing
+    credential creation describes the dashboard only. `setup_vapi.py`
+    therefore defaults to `VAPI_WEBHOOK_SECRET` (the same variable the
+    running app already reads) and accepts an optional
+    `VAPI_WEBHOOK_CREDENTIAL_ID` for anyone who creates a Custom
+    Credential by hand in the dashboard and wants the script to
+    reference it instead.
+  - `scripts/test_setup_vapi.py` — 24 dependency-free unit tests covering
+    every pure function: payload builders for all three resource types,
+    the system-prompt loader (including its two error paths), and
+    create-vs-update upsert planning — including the rule that the
+    script refuses to guess which `transferCall` tool to update if more
+    than one already exists on the account, rather than picking one.
+  - The networked half (`VapiClient`, and everything inside `main()`'s
+    `--apply` branch) is Written, reviewed, and cross-checked against the
+    live docs above — NOT executed. `httpx` is imported lazily inside
+    `VapiClient.__init__` specifically so the dependency-free half stays
+    importable and testable without it, and so a plain `--dry-run`
+    invocation needs no dependencies beyond the Python standard library
+    at all.
+- **Testing status (§7 — stated exactly, not rounded up):**
+  - **Verified locally, this session:** `cd scripts && python3 -m
+    unittest test_setup_vapi -v` → `OK`, 24 tests, 0 failures, 0 errors,
+    0 skips. Also ran the CLI itself directly end to end (`python3
+    scripts/setup_vapi.py --model-provider openai --model-name gpt-4o
+    --transfer-number "+15551234567"`, no `--apply`) — printed the
+    correct 21-tool + `transferCall` plan and a well-formed assistant
+    payload containing the real system prompt loaded live from
+    `docs/VAPI.md`, confirming the zero-dependency dry-run path works
+    end to end, not just at the unit-test level.
+  - One real bug was caught by execution, not review: the first draft
+    imported `app.core.config.get_settings()`, a pydantic model —
+    pydantic isn't importable in this sandbox either, so that single
+    import broke even the dependency-free dry-run path before any test
+    ran. Replaced with direct `os.environ` reads of the same variable
+    names `Settings` defines; re-ran the full test file afterward to
+    confirm the fix (24/24 passing after the change; a hard import
+    failure before it — not silently patched over).
+  - **Written, reviewed, not executed:** `VapiClient` and every
+    `--apply`-path call inside `main()` — needs `httpx` (not installed
+    here, confirmed again this session: `ModuleNotFoundError: No module
+    named 'httpx'`), network egress to `api.vapi.ai` (confirmed blocked
+    again this session: `403`, header `x-deny-reason: host_not_allowed`,
+    same as every other outbound host T-1 already tested), and a real
+    `VAPI_API_KEY` — none of which exist in this sandbox.
+  - **Requires external verification / BLOCKED, same class as T-1:**
+    - Running `setup_vapi.py --apply` against a real Vapi account for
+      the first time (nothing in this script has ever executed a real
+      Vapi API call).
+    - WBS-2.2: connecting/attaching a real phone number.
+    - WBS-2.4: placing one real inbound test call.
+    - WBS-2.5: confirming the native `transferCall` handoff actually
+      transfers a live call — not just that the tool object was created.
+    - Deciding whether to move the webhook secret to a dashboard-created
+      Custom Credential (`VAPI_WEBHOOK_CREDENTIAL_ID`) instead of the
+      legacy inline `secret` field — a product/ops choice, not something
+      this script or session can make.
+- **Remaining to close this task:** a project owner (or CI) with real
+  network access and a live Vapi account needs to: set `VAPI_API_KEY` /
+  `VAPI_SERVER_URL` / `VAPI_WEBHOOK_SECRET` (or
+  `VAPI_WEBHOOK_CREDENTIAL_ID`) in the environment; run `setup_vapi.py
+  --apply` once; save the printed `VAPI_ASSISTANT_ID` back into `.env`
+  (re-running `--apply` without it creates a second assistant instead of
+  updating the first — the script prints this warning inline); attach or
+  buy a real number, set `VAPI_PHONE_NUMBER_ID`, and re-run `--apply` to
+  attach it; then place one real inbound call and confirm both an
+  ordinary tool call and a transfer-to-human handoff actually work.
+
 ---
 
 ## Proposed (not yet authorized)
@@ -279,15 +390,6 @@ dependency).
   frozen regardless of the decision (see `docs/PROJECT_ROADMAP.md` §2,
   source-of-truth item 9).
 - **Depends on:** nothing technical — a product/planning call.
-
-### T-4 — Phase 6 remainder: telephony
-- **Scope:** `scripts/setup_vapi.py` (spec §51: create/update tools,
-  create/update assistant, configure webhook, attach a phone number);
-  connect a real number; one real inbound test call; configure the
-  native `transferCall` tool per `docs/VAPI.md`'s instructions.
-- **NOT in scope:** any change to existing tool logic — this is
-  configuration/scripting only, on top of what Phase 5 already built.
-- **Depends on:** a live Vapi account.
 
 ### T-5 — Phase 8: notifications
 - **Scope:** A real email provider (Resend or SMTP) and a real SMS

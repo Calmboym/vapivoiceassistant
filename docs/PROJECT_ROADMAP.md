@@ -132,8 +132,8 @@ Distinguishing originally-planned vs. actual:
 | 2 | DB schema/Alembic/airport & aircraft data/mock flights/`MockAirlineProvider` | 🟢 **Complete, logic-verified** | Migrations `0001`–`0004` present and column-checked against models (re-verified this audit, see §6.3 for one correction); 18 airports seeded (all of the spec's §8 minimum list plus 3 more) with the "any London airport" disambiguation group from §6; `MockAirlineProvider` fully covered by `tests/test_core_logic.py` | Run `alembic upgrade head` + `python -m app.db.seed` against a real Postgres |
 | 3 | Flight search/quote/booking/lookup/modification/cancellation/passenger mgmt | 🟢 **Complete, logic-verified** | `app/services/{flight,booking,cancellation,passenger}_service.py`, routes wired in `main.py`, `tests/test_core_logic.py` passing | HTTP-level execution against a real running FastAPI instance |
 | 4 | Authentication, RBAC, audit logging, rate limiting, security | 🟢 **Complete, core logic executed; HTTP layer written, unexecuted** | 93 dependency-free tests (`test_security_core.py`) actually pass (re-run this audit: confirmed); `tests/test_api_security.py` (6 classes, 18 methods) written against real FastAPI `TestClient`, skips cleanly here | Install FastAPI/SQLAlchemy/pytest in a networked environment and run `test_api_security.py` for real — the single highest-leverage unblocked action for the whole project (blocks verifying Phases 4 through 7's HTTP layers all at once) |
-| 5 | Vapi integration: webhook, tools, assistant config, voice system prompt | 🟢 **Complete as code; live-call behavior unverified** | `app/api/routes/vapi.py`, `app/core/vapi/*`, `app/core/security/vapi_{authorization,webhook_auth}.py`; 56 dependency-free tests pass; tool-schema ⇄ authorization-matrix ⇄ dispatch-table consistency independently re-verified this audit (21 schemas, 23 matrix entries, 16 wired dispatch functions — see §6.4 for tools present in spec §19 but absent here) | Live Vapi account + real phone call; `transfer_to_human`'s native `transferCall` companion tool has never been configured; `scripts/setup_vapi.py` (spec §51) was never written — see §9 |
-| 6 | Phone integration: inbound call, voice booking/lookup/cancellation, human transfer | 🟡 **PARTIAL — and the repo's own phase labels do not match this row; read §6.1 before trusting any doc that says "Phase 6" without qualification** | The *logic* for voice booking/lookup/cancellation/human-transfer-logging is the same code delivered under "Phase 5" above (`create_booking`/`get_booking`/`cancel_booking`/`modify_booking`/`transfer_to_human` Vapi tools). What has **not** happened: a real phone number connected to a real Vapi assistant, a real inbound call ever reaching it, or `scripts/setup_vapi.py` being written at all | Live phone number + inbound call test (Master Build Prompt §79 items 19–25); `scripts/setup_vapi.py`; native `transferCall` tool configuration |
+| 5 | Vapi integration: webhook, tools, assistant config, voice system prompt | 🟢 **Complete as code; live-call behavior unverified** | `app/api/routes/vapi.py`, `app/core/vapi/*`, `app/core/security/vapi_{authorization,webhook_auth}.py`; 56 dependency-free tests pass; tool-schema ⇄ authorization-matrix ⇄ dispatch-table consistency independently re-verified this audit (21 schemas, 23 matrix entries, 16 wired dispatch functions — see §6.4 for tools present in spec §19 but absent here) | Live Vapi account + real phone call; `transfer_to_human`'s native `transferCall` companion tool has never been configured. **Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` (spec §51) is now written (24 dependency-free tests, `OK`) and would automate the `transferCall` configuration too — but has never been run against a real account, so this row's "live-call behavior unverified" still stands unchanged. |
+| 6 | Phone integration: inbound call, voice booking/lookup/cancellation, human transfer | 🟡 **PARTIAL — and the repo's own phase labels do not match this row; read §6.1 before trusting any doc that says "Phase 6" without qualification** | The *logic* for voice booking/lookup/cancellation/human-transfer-logging is the same code delivered under "Phase 5" above (`create_booking`/`get_booking`/`cancel_booking`/`modify_booking`/`transfer_to_human` Vapi tools). What has **not** happened: a real phone number connected to a real Vapi assistant, or a real inbound call ever reaching it. **Updated 2026-09-09 (T-4, authorized this session):** `scripts/setup_vapi.py` now exists — written, 24 dependency-free tests passing, never run against a real account | Live phone number + inbound call test (Master Build Prompt §79 items 19–25); running `scripts/setup_vapi.py --apply` against a real Vapi account for the first time; native `transferCall` tool configuration (the script automates creating it, but the transfer itself needs a real call to confirm) |
 | 7 | Payments: Stripe, webhooks, booking/payment consistency | 🟡 **PARTIAL — delivered under the repo's own "Phase 6 Milestone 1" label; see §6.1. `refund_payment` (T-3) closed one of the two gaps this row used to list** | `create_payment_session`/`get_payment_status`/`refund_payment` implemented, code-reviewed, and (for the dependency-free portions) executed — 46 tests in `test_payments_core.py`; `CancellationService.cancel()` now calls the real provider for a paid cancellation (`docs/PAYMENTS.md` §9); `StripePaymentProvider` (incl. `refund_payment`) written and cross-checked against live Stripe docs but never executed (no network in any sandbox to date) | A real Stripe test-mode Checkout Session AND a real test-mode refund completing end-to-end; a `refund.updated`/`charge.refunded` webhook subscription (a non-instant refund's `pending`/`requires_action` status never auto-resolves — scoped out of T-3 on purpose); out-of-band delivery of the payment link (no email/SMS provider exists — see Phase 8) |
 | 8 | Notifications: email, SMS | 🔴 **NOT IMPLEMENTED** | Only `app/services/email_provider.py::MockEmailProvider` exists (not a real delivery mechanism); no SMS provider anywhere in the codebase; `RESEND_API_KEY`/`TWILIO_*` are defined in `Settings` and `.env.example` but nothing reads them | Build a real email provider (Resend or SMTP) and an SMS provider (Twilio), wire booking-confirmation and payment-link delivery to them |
 | 9 | Admin dashboard | 🔴 **NOT IMPLEMENTED** | No `/api/v1/admin`, `/api/v1/customers`, or `/api/v1/calls` routes exist (confirmed by reading every route file and `main.py`'s router registration); no admin pages in `apps/web`; only the backend RBAC boundary (`ADMIN`/`SUPER_ADMIN` roles, `admin.*` permissions) and `bootstrap_admin.py` exist | Everything — API routes to read `Call`/`ToolExecution`/`Booking`/`Payment` data for staff, and the Next.js admin UI itself |
@@ -168,8 +168,12 @@ transfer-to-human) was already delivered as part of what the repo calls
 `cancel_booking`/`modify_booking`/`transfer_to_human` *is* "voice
 booking/voice lookup/voice cancellation/human transfer." What remains of
 original Phase 6, uniquely, is the literal telephony piece: a connected
-phone number, a real inbound call, and `scripts/setup_vapi.py` (spec
-§51) — none of which exist. Payments (spec Phase 7) was, in substance,
+phone number and a real inbound call — neither of which exist yet.
+**Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` (spec §51), the
+third item this paragraph used to list as not existing, is now written
+(see `docs/TASK_BOARD.md` T-4) but has never been run against a real
+account, so it closes none of Phase 6's remaining gap by itself yet.
+Payments (spec Phase 7) was, in substance,
 pulled forward ahead of that remaining telephony sliver.
 
 **Resolution for this roadmap:** §3's phase numbers are preserved
@@ -367,7 +371,8 @@ STEP 3a (Phase 7 remainder) — refund_payment (staff/admin-only tool),
          a real Stripe test-mode Checkout Session end-to-end (needs a
          live account), payment-link delivery (blocked on Phase 8)
    v
-STEP 3b (Phase 6 remainder, telephony) — scripts/setup_vapi.py, connect a
+STEP 3b (Phase 6 remainder, telephony) — scripts/setup_vapi.py (now
+         written, T-4, 2026-09-09 — see §8), connect a
          real phone number, one real inbound call, transferCall config
    v
 STEP 4 (Phase 8) — Real email provider (Resend/SMTP) + real SMS provider
@@ -392,14 +397,15 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
 
 **Read this section first if you are a new session picking this up.**
 
-- **Last completed work:** T-3 (Phase 7 remainder — `refund_payment`,
-  2026-09-08): `PaymentProvider.refund_payment()` implemented in both
-  `MockPaymentProvider` and `StripePaymentProvider`; `CancellationService.
-  cancel()` now actually calls it for a paid cancellation instead of only
-  flipping `payment_status` locally (see risk (2) below — **closed**,
-  moved out of this list); a new staff-only `POST /api/v1/payments/
-  refunds` route for a manual/goodwill refund independent of
-  cancellation. See `docs/handoffs/2026-09-08-t3-refund-payment.md` and
+- **Last completed (closed) work:** T-3 (Phase 7 remainder —
+  `refund_payment`, 2026-09-08): `PaymentProvider.refund_payment()`
+  implemented in both `MockPaymentProvider` and `StripePaymentProvider`;
+  `CancellationService.cancel()` now actually calls it for a paid
+  cancellation instead of only flipping `payment_status` locally (see
+  risk (2) below — **closed**, moved out of this list); a new staff-only
+  `POST /api/v1/payments/refunds` route for a manual/goodwill refund
+  independent of cancellation. See
+  `docs/handoffs/2026-09-08-t3-refund-payment.md` and
   `docs/PAYMENTS.md` §9 for the full design. 236/236 dependency-free
   tests pass (13 new, all in `test_payments_core.py` — re-executed and
   confirmed this session).
@@ -407,13 +413,31 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   Sessions: `create_payment_session`, `get_payment_status`), labeled
   "Phase 6 Milestone 1" in its own handoff — see §6.1 for why that label
   doesn't match the original spec's numbering.
+- **This session's work (2026-09-09):** T-4 (Phase 6 remainder —
+  telephony) moved from Proposed to **AUTHORIZED** on the project
+  owner's explicit instruction, and `scripts/setup_vapi.py` (spec §51,
+  WBS-2.1) was written — idempotent create-or-update for the 21
+  registered Vapi tools, the native `transferCall` tool, the Assistant,
+  and phone-number attachment, cross-checked against Vapi's current API
+  docs (fetched this session; includes one genuinely new finding —
+  Vapi's move to a dashboard-managed Custom Credentials webhook-auth
+  system, which does not contradict what
+  `vapi_webhook_auth.py` already had on record). 24 new dependency-free
+  tests (`scripts/test_setup_vapi.py`), executed: `OK`. **T-4 is NOT
+  closed** — see its `docs/TASK_BOARD.md` entry: WBS-2.2 through 2.5 (a
+  real phone number, a real inbound call, live `transferCall`
+  verification) remain BLOCKED on the same external dependency (a live
+  Vapi account) the task always named, compounded by this sandbox's
+  network restriction.
 - **Current authorized work:** T-1 (install & execute the FastAPI/
   SQLAlchemy test layer for real) remains authorized and still
   **BLOCKED** — re-confirmed again this session (`python3 -c "import
-  fastapi"` / `sqlalchemy` / `stripe` all raise `ModuleNotFoundError`;
-  network still disabled in this sandbox). Identical to every prior
-  sandbox since Phase 4; not a new finding. See `docs/TASK_BOARD.md`'s
-  T-1 entry for the full attempt log.
+  fastapi"` / `sqlalchemy` / `stripe` / `httpx` / `pydantic` all raise
+  `ModuleNotFoundError`; network still disabled in this sandbox).
+  Identical to every prior sandbox since Phase 4; not a new finding. T-4
+  is now also authorized and also **BLOCKED**, for the same underlying
+  reason plus its own further dependency on a live Vapi account — see
+  `docs/TASK_BOARD.md`'s T-1 and T-4 entries for the full attempt logs.
 - **Next work (candidates, not yet chosen):** Step 1 (get the full stack
   installed and run the HTTP-level test suites for real) is the
   recommended first move regardless of which feature comes next, because
@@ -421,11 +445,13 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   the cheapest way to convert "written, reviewed" into "known to work" or
   "found a real bug" across all of them at once — this now includes
   T-3's `refund_payment` route/service/CancellationService changes too.
+  Running `scripts/setup_vapi.py --apply` for the first time, against a
+  real Vapi account, is the equivalent next move for T-4.
 - **Blocked work:** anything requiring network access this build
-  environment doesn't have (installing FastAPI/SQLAlchemy/`stripe`,
-  `docker compose up`, a live Vapi account, a live Stripe test-mode
-  account) — confirmed still blocked this session too (`pip install
-  fastapi` fails here exactly as it has since Phase 4).
+  environment doesn't have (installing FastAPI/SQLAlchemy/`stripe`/
+  `httpx`, `docker compose up`, a live Vapi account, a live Stripe
+  test-mode account) — confirmed still blocked this session too (`pip
+  install fastapi` fails here exactly as it has since Phase 4).
 - **Important known risks:** (1) the Phase 6/7 numbering question in
   §6.1 is unresolved and should be decided explicitly rather than left
   ambiguous going forward; (2) ~~`CancellationService.cancel()` flips
@@ -440,9 +466,12 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
 ## 9. Known gaps and risks
 
 **Missing features (by original phase):**
-- Phase 6: live telephony connection, `scripts/setup_vapi.py`, native
-  `transferCall` configuration.
-- Phase 7: `refund_payment`, payment-link delivery.
+- Phase 6: live telephony connection (a real number, a real inbound
+  call), native `transferCall` verification against a real call.
+  **Updated 2026-09-09 (T-4):** `scripts/setup_vapi.py` itself is now
+  written — see below, no longer listed as missing, only as unexecuted.
+- Phase 7: payment-link delivery. (`refund_payment` closed by T-3,
+  2026-09-08.)
 - Phase 8: real email provider, real SMS provider — entirely absent.
 - Phase 9: admin dashboard — entirely absent (no routes, no UI).
 - Phase 10: Playwright E2E, voice conversation test suite — entirely
@@ -451,7 +480,7 @@ in `docs/WORK_BREAKDOWN_STRUCTURE.md`.
   support tickets, callback requests, FAQ/knowledge base, i18n (German/
   Persian per spec §41), GDPR export/deletion endpoints, call recording/
   transcription, retention-policy enforcement jobs (variables exist,
-  nothing reads them), `scripts/setup_vapi.py`.
+  nothing reads them).
 - Newly identified this audit (§6.4): `update_passenger`, `get_customer`/
   `create_customer`/`update_customer`, `end_call`, `get_airport`/
   `search_airports`, `get_faq` — no Vapi tool registered at all, not even

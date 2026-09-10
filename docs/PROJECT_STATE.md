@@ -1,6 +1,6 @@
 # Charter123 — Project State
 
-**Status: CANONICAL, current as of 2026-09-08 (T-3 session).** This is a
+**Status: CANONICAL, current as of 2026-09-09 (T-4 session).** This is a
 terse, subsystem-by-subsystem snapshot for fast lookup. For narrative,
 phase history, and contradictions, see `docs/PROJECT_ROADMAP.md` — that
 file is authoritative if this one ever drifts from it.
@@ -76,9 +76,9 @@ Each row: what exists → what's verified → what isn't.
 | Dispatch table (16 of 21 tools wired to real services) | Complete for those 16 | ✅ |
 | `Call`/`ToolExecution` models + migration `0003` | Written | Not executed |
 | Rate limiting (webhook + per-call) | Complete | ✅ keying + algorithm; source-IP meaningfulness behind a proxy unverified |
-| `transfer_to_human` (logs escalation; does not itself move the call) | Complete, correctly scoped | ✅ logic; native `transferCall` companion tool never configured in a real Vapi dashboard |
-| `scripts/setup_vapi.py` (spec §51) | **Does not exist** | Confirmed absent — `scripts/README.md` documents it as reserved, never written |
-| Live phone number / real inbound call | **Never done** | Blocked — needs a real Vapi account |
+| `transfer_to_human` (logs escalation; does not itself move the call) | Complete, correctly scoped | ✅ logic; native `transferCall` companion tool never configured in a real Vapi dashboard — `scripts/setup_vapi.py` (T-4) would now do this, but has never been run |
+| `scripts/setup_vapi.py` (spec §51, T-4, 2026-09-09) | Written | ✅ 24 dependency-free tests (`scripts/test_setup_vapi.py`, all pure payload/planning logic + the system-prompt loader) + a real CLI dry-run exercised this session; networked half (`VapiClient`, the `--apply` path) never executed — needs `httpx` (not installed here) + network + a real `VAPI_API_KEY` |
+| Live phone number / real inbound call | **Never done** | Blocked — needs a real Vapi account (see `docs/TASK_BOARD.md` T-4) |
 | Multilingual (German/Persian) prompt/config | **Not started** | Explicitly documented as such in `docs/VAPI.md` |
 | Tools registered but intentionally unavailable (5): `add_baggage`, `get_seat_options`, `select_seat`, `create_support_ticket`, `create_callback_request` | Registered as `implemented=False` placeholders | Genuine domain gaps, re-verified this audit by grepping for backing models — none exist |
 | Tools from spec §19 **not registered at all** (8): `update_passenger`, `get_customer`, `create_customer`, `update_customer`, `end_call`, `get_airport`, `search_airports`, `get_faq` | **Missing entirely** | New finding, this audit — see `docs/PROJECT_ROADMAP.md` §6.4 |
@@ -126,6 +126,7 @@ Each row: what exists → what's verified → what isn't.
 | `tests/test_api_security.py` | 18 methods, 6 classes | Written against real `TestClient`; skips cleanly here (no FastAPI) |
 | `tests/test_vapi_api.py` | 2 classes | Written; skips cleanly here |
 | `tests/{e2e,integration,voice}/` | 0 | Placeholders only — `README.md` in each, no test code |
+| `scripts/test_setup_vapi.py` (T-4, separate suite — repo-root `scripts/`, not `apps/api/tests/`; NOT part of the 236 above or `.github/workflows/t1-verify.yml`'s pinned baseline) | 24 | ✅ passing (`cd scripts && python3 -m unittest test_setup_vapi -v` → `OK`) |
 
 ## Known residual security/integrity findings (this audit — see roadmap §6.6 for detail)
 

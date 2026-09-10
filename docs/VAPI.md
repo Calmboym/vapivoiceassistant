@@ -162,12 +162,20 @@ assistant — "Escalation logged. Use the transfer tool now..." — never a
 claim to the caller that a transfer is happening, which would be exactly
 the misleading-confirmation failure mode this needs to avoid).
 
-**Required Vapi-side configuration** (not done, can't be done from this
-sandbox): create a native `transferCall` tool with a phone-number
-destination for Charter123's support line, attach it to the assistant,
-and add a system-prompt line: *"When you need to escalate, call
-transfer_to_human to log why, then immediately call the transfer tool to
-connect them."* Vapi sets `endedReason` to `assistant-forwarded-call`
+**Required Vapi-side configuration** — as of 2026-09-09 (T-4),
+`scripts/setup_vapi.py` automates this end to end: it creates a native
+`transferCall` tool with the phone-number destination you pass via
+`--transfer-number`/`VAPI_TRANSFER_NUMBER`, attaches it to the assistant
+alongside every other tool, and seeds the assistant's system prompt from
+this file's own "Suggested system prompt" section below — which already
+contains the exact escalation instruction this paragraph used to ask you
+to add by hand ("call transfer_to_human to log why, then immediately call
+the transfer tool to connect them"). **The script has never been run
+against a real account** (no live Vapi account or network egress exists
+in the sandbox it was written in — see `docs/TASK_BOARD.md` T-4's
+Attempt log) — everything above is Written/reviewed, not
+Verified-against-a-real-account. Vapi sets `endedReason` to
+`assistant-forwarded-call`
 when a transfer via `transferCall` succeeds — this webhook already
 captures `endedReason` into `Call.ended_reason` on the `end-of-call-
 report` message, so once the native tool is configured, "did an
@@ -335,7 +343,11 @@ connect them.
 
 Already present in `.env.example` (Phase 4 anticipated this phase):
 `VAPI_API_KEY`, `VAPI_WEBHOOK_SECRET`, `VAPI_ASSISTANT_ID`,
-`VAPI_PHONE_NUMBER_ID`. No new variables were needed.
+`VAPI_PHONE_NUMBER_ID`. No new variables were needed for the application
+itself. **Update, 2026-09-09 (T-4):** three more were added, but only for
+`scripts/setup_vapi.py` — the running app still doesn't read them:
+`VAPI_SERVER_URL`, `VAPI_WEBHOOK_CREDENTIAL_ID`, `VAPI_TRANSFER_NUMBER`.
+See `docs/ENVIRONMENT_VARIABLES.md` for what each does.
 
 ## Multilingual voice — NOT IMPLEMENTED
 
@@ -382,6 +394,9 @@ account, a live phone call, or a live webhook delivery.
   the single largest gap between "should work" and "known to work."
 - **Transfer to human requires external Vapi configuration** (a native
   `transferCall` tool) that hasn't been created or tested — see above.
+  **Update, 2026-09-09 (T-4):** `scripts/setup_vapi.py` now automates
+  creating and attaching that tool, but the script itself has never been
+  run against a real account — this remains untested until it is.
 - **Rate-limit tuning is a placeholder**, not validated against real
   traffic — see the Rate limiting section's tuning caveat.
 - **The concurrent (not sequential) double-delivery race on
