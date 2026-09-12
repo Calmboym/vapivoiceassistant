@@ -76,6 +76,8 @@ jobs:
             tests.test_api_security \
             tests.test_vapi_api \
             tests.test_notifications_core \
+            tests.test_admin_core \
+            tests.test_voice_conversation_core \
             -v > /tmp/test_output.log 2>&1 || true
           cat /tmp/test_output.log
 
@@ -105,13 +107,22 @@ jobs:
 
           # 223 at T-1's original writing -> 236 after T-3's refund_payment
           # (2026-09-08) -> 267 after T-5's notifications (2026-09-09,
-          # +31 in the new tests.test_notifications_core). NOTE: this value
-          # was found STALE at 223 (not 236) when T-5 started, even though
-          # T-3 had already raised the real count to 236 the day before —
-          # fixed as part of T-5 rather than left for someone else to trip
-          # over; see docs/PROJECT_STATE.md's own note about the same
-          # per-file drift found in that doc at the same time.
-          EXPECTED = 267
+          # +31 in tests.test_notifications_core) -> 289 after T-6's admin
+          # dashboard (2026-09-11, +9 in tests.test_security_core's new
+          # StaffAccessTests/RbacTests additions, +13 in the new
+          # tests.test_admin_core). NOTE: this value was found STALE at 223
+          # (not 236) when T-5 started, even though T-3 had already raised
+          # the real count to 236 the day before — fixed as part of T-5
+          # rather than left for someone else to trip over; see
+          # docs/PROJECT_STATE.md's own note about the same per-file drift
+          # found in that doc at the same time. Re-confirmed NOT stale this
+          # time (T-6): re-ran the full suite before writing this number,
+          # got exactly 289, matches what's recorded in docs/TASK_BOARD.md's
+          # T-6 entry -> 318 after T-7's new tests.test_voice_conversation_
+          # core (2026-09-12, +29, WBS-6.2's spec-§56 suite). Re-confirmed
+          # NOT stale this time either: re-ran the full extended suite
+          # before writing this number, got exactly 318.
+          EXPECTED = 318
           if ran != EXPECTED:
               print(f"::error::Expected exactly {EXPECTED} tests (the established "
                     f"baseline recorded in docs/TASK_BOARD.md) but {ran} ran. "

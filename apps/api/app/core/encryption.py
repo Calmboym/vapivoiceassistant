@@ -11,19 +11,34 @@ Development fallback: if no key is configured, values are stored with a
 path is intentionally awkward to keep it out of production — the settings
 model refuses to boot with APP_ENV=production unless FIELD_ENCRYPTION_KEY
 is set (see app/core/config.py).
+
+T-7 (WBS-6.2, docs/TASK_BOARD.md) finding: `get_settings`/`get_logger`
+used to be imported at MODULE level here, even though `mask_for_speech`
+below — the one function §10's "never read a full passport number aloud"
+rule actually depends on — touches neither settings nor logging. That
+meant the mere act of importing this module required pydantic AND
+structlog to be installed, so `mask_for_speech` could never be exercised
+by the dependency-free test tier (the sandbox this project has run every
+session in has neither package) — the exact tier this file's own
+docstring, and MASTER_RULES.md's "dependency-free test isolation"
+principle, says safety-critical logic belongs in. Both imports are now
+lazy (moved inside the functions that actually need them, same pattern
+`_get_fernet` already used for `cryptography.fernet`), so `mask_for_speech`
+importing and running requires nothing beyond the stdlib. `encrypt_
+sensitive`/`decrypt_sensitive`'s behavior is unchanged either way — they
+still call `get_settings()`/log the same warning, just resolved at call
+time instead of import time. See tests/test_voice_conversation_core.py's
+`PassportNeverReadAloudTests` for the test this fix unblocks.
 """
 
 from __future__ import annotations
-
-from app.core.config import get_settings
-from app.core.logging import get_logger
-
-logger = get_logger(__name__)
 
 _DEV_PREFIX = "UNENCRYPTED-DEV:"
 
 
 def _get_fernet():
+    from app.core.config import get_settings  # lazy — see module docstring (T-7)
+
     settings = get_settings()
     if not settings.field_encryption_key:
         return None
@@ -35,7 +50,9 @@ def _get_fernet():
 def encrypt_sensitive(plaintext: str) -> str:
     fernet = _get_fernet()
     if fernet is None:
-        logger.warning("field_encryption_key_not_set_storing_unencrypted_dev_only")
+        from app.core.logging import get_logger  # lazy — see module docstring (T-7)
+
+        get_logger(__name__).warning("field_encryption_key_not_set_storing_unencrypted_dev_only")
         return _DEV_PREFIX + plaintext
     return fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
 

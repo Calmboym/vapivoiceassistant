@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,9 +15,10 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-export default function LoginPage() {
+function LoginForm() {
   const { login } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [formError, setFormError] = useState<string | null>(null);
   const {
     register,
@@ -29,7 +30,19 @@ export default function LoginPage() {
     setFormError(null);
     try {
       await login(values.email, values.password);
-      router.push("/account");
+      // T-7 (WBS-6.1) fix: this used to always push to "/account" and
+      // ignore `next` entirely, even though app/admin/layout.tsx sends an
+      // unauthenticated staff member here via `/login?next=/admin` — so a
+      // staff member who got bounced off /admin to log in landed back on
+      // /account instead, needing an extra manual click. Found while
+      // writing this task's admin Playwright suite, which needs a real
+      // login -> land-on-/admin path to test against. `next` is only
+      // honored when it's an internal path (starts with "/", not the
+      // protocol-relative-URL open-redirect shape "//...") — anything
+      // else falls back to the original "/account" default.
+      const next = searchParams.get("next");
+      const isSafeInternalPath = !!next && next.startsWith("/") && !next.startsWith("//");
+      router.push(isSafeInternalPath ? next! : "/account");
     } catch (err) {
       // Deliberately the SAME message no matter what the backend's code
       // was (INVALID_CREDENTIALS covers "no such account" and "wrong
@@ -95,5 +108,24 @@ export default function LoginPage() {
         </p>
       </form>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  // useSearchParams() requires a Suspense boundary in the App Router
+  // (Next.js bails a page relying on it out of static rendering
+  // otherwise) — no other page in this codebase used useSearchParams()
+  // before this fix, so there was no existing precedent to match; this
+  // is Next.js's own documented pattern for it.
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen flex items-center justify-center">
+          <p className="text-mist text-sm">Loading…</p>
+        </main>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import aircraft, auth, bookings, flights, health, passengers, payments, vapi
+from app.api.routes import admin, aircraft, auth, bookings, calls, customers, flights, health, passengers, payments, vapi
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
@@ -73,6 +73,13 @@ def create_app() -> FastAPI:
     app.include_router(passengers.router)
     app.include_router(payments.router)
     app.include_router(vapi.router)
+    # Phase 9 (T-6) — admin dashboard. customers.py/calls.py/admin.py
+    # each gate their own routes internally (require_staff_permission /
+    # require_permission(ADMIN_READ|CALLS_READ) / require_customer_profile_access
+    # — see each file's module docstring); nothing extra needed here.
+    app.include_router(customers.router)
+    app.include_router(calls.router)
+    app.include_router(admin.router)
 
     return app
 

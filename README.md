@@ -7,20 +7,24 @@ against a fully-featured `MockAirlineProvider` with zero external aviation
 credentials, and switching to a real GDS (Amadeus/Sabre) is a config
 change, not a rewrite. See `docs/AIRLINE_PROVIDER.md`.
 
-**Current status (corrected 2026-09-09 — T-5): Phases 1–5 of the build
+**Current status (corrected 2026-09-11 — T-6): Phases 1–5 of the build
 are complete (repo/infra → DB schema & mock provider → core booking
 flows → authentication/RBAC/security → Vapi voice integration), plus
 Phase 7 Milestone 1 (Stripe payment sessions — labeled "Phase 6
 Milestone 1" in its own handoff; see `docs/PROJECT_ROADMAP.md` §6.1 for
 why that label doesn't match the original spec's numbering),
-`refund_payment` (T-3), and Phase 8 notifications — real email (Resend)
+`refund_payment` (T-3), Phase 8 notifications — real email (Resend)
 and SMS (Twilio) providers wired to booking-confirmation and
-payment-link delivery (T-5). `scripts/setup_vapi.py` (T-4) automates the
-rest of live telephony setup but has never been run against a real
-account. Still not built: a real inbound phone call ever reaching this
-system, and the admin dashboard. Still not verified: any of the above
-against a real Vapi/Stripe/Resend/Twilio account — this sandbox has
-never had network egress.** See
+payment-link delivery (T-5) — and Phase 9, the admin dashboard:
+`/api/v1/customers`, `/api/v1/calls`, `/api/v1/admin/{bookings,
+analytics}` routes plus 7 Next.js staff pages (T-6). `scripts/
+setup_vapi.py` (T-4) automates the rest of live telephony setup but has
+never been run against a real account. Still not built: a real inbound
+phone call ever reaching this system, and the Vapi tool wrappers around
+Phase 9's new customer service (`update_passenger`/`get_customer`/
+`update_customer` — T-8). Still not verified: any of the above against a
+real Vapi/Stripe/Resend/Twilio account or a real `npm install`/`next
+build` — this sandbox has never had network egress.** See
 `docs/PROJECT_ROADMAP.md` for the full reconciled status and
 `docs/PRODUCTION_CHECKLIST.md` for the exact, honest, line-by-line
 status — including which parts have been executed and verified versus
@@ -30,8 +34,9 @@ architecture.
 ## Architecture
 
 ```
-apps/web   Next.js frontend (a status page plus Phase 4's login/register/
-           account pages — no booking or admin UI yet)
+apps/web   Next.js frontend (a status page, Phase 4's login/register/
+           account pages, and Phase 9's staff-only /admin dashboard — no
+           customer-facing booking UI yet)
 apps/api   FastAPI backend — flights, aircraft, bookings, passengers
 docs/      Architecture, provider, booking-flow, env-var, and checklist docs
 ```
@@ -95,13 +100,15 @@ standard library:
 
 ```bash
 cd apps/api
-python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_notifications_core -v
+python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_notifications_core tests.test_admin_core -v
 ```
 
-This is **267 tests and they pass** — actually run, repeatedly, while
+This is **289 tests and they pass** — actually run, repeatedly, while
 building each phase (123 through Phase 4, +56 in Phase 5, +44 in Phase 6
 Milestone 1, +13 in T-3's `refund_payment`, +31 in T-5's Phase 8
-notifications). Execution caught real bugs
+notifications, +22 in T-6's Phase 9 admin dashboard — 9 for the new
+`authorize_staff_access()` authorization primitive, 13 for the new
+`app/core/admin/analytics.py`). Execution caught real bugs
 each time, not just in Phase 1-3: a flight-ID parser that broke on
 ISO-date hyphens, an
 unrealistic flight-duration formula, an IDOR bug in the Phase 4
@@ -111,7 +118,7 @@ a `cryptography` version pin that excluded the only versions with the
 Argon2id support Phase 4's password hashing depends on. See the top of
 `tests/test_core_logic.py`, `tests/test_security_core.py`,
 `tests/test_vapi_core.py`, `tests/test_payments_core.py`,
-`tests/test_notifications_core.py`, and
+`tests/test_notifications_core.py`, `tests/test_admin_core.py`, and
 `PROJECT_HANDOFF_PHASE_4.md` §5 for the full bug list.
 
 Once you've `pip install -r requirements.txt`'d, the rest of the test
@@ -136,18 +143,22 @@ fallback is appropriate for production — see `docs/ARCHITECTURE.md`.
 
 ## What's next
 
-**Corrected 2026-09-09** — this section previously described the Vapi
-layer, Stripe payments, `refund_payment`, and notifications as future
-work; all four are now built (see "Current status" above). Read
-`docs/PROJECT_ROADMAP.md` §7/§8 for the current, accurate execution plan
-and position; short version: get the FastAPI/SQLAlchemy test layer
-actually running somewhere with network access (nothing in that layer
-has ever been executed, including T-3's refund changes and T-5's
-notification changes), then either run `scripts/setup_vapi.py --apply`
-against a real Vapi account (the remaining piece of Phase 6/T-4), set
-real Resend/Twilio credentials and confirm a real email/SMS arrives
-(the remaining piece of T-5), or start Phase 9 (admin dashboard) — none
-of these block each other. **Read
+**Corrected 2026-09-11** — this section previously described the Vapi
+layer, Stripe payments, `refund_payment`, notifications, and the admin
+dashboard as future work; all five are now built (see "Current status"
+above). Read `docs/PROJECT_ROADMAP.md` §7/§8 for the current, accurate
+execution plan and position; short version: get the FastAPI/SQLAlchemy
+test layer actually running somewhere with network access (nothing in
+that layer has ever been executed, including T-3's refund changes,
+T-5's notification changes, and T-6's admin routes), then either run
+`scripts/setup_vapi.py --apply` against a real Vapi account (the
+remaining piece of Phase 6/T-4), set real Resend/Twilio credentials and
+confirm a real email/SMS arrives (the remaining piece of T-5), run `npm
+install` and a real `next build`/browser click-through against the new
+`/admin` pages (the remaining piece of T-6), or start T-8 (the Vapi
+tools this project's audit found missing — `update_passenger`/
+`get_customer`/`update_customer` now have a backing service to call,
+courtesy of T-6) — none of these block each other. **Read
 `docs/SESSION_PROMPT.md` before starting any new session** — it replaces
 the old advice to read
 a specific phase handoff, since which handoff is "latest" now changes

@@ -178,6 +178,52 @@ def authorize_customer_profile_access(
     )
 
 
+def authorize_staff_access(
+    actor: CurrentActor,
+    *,
+    required_permission: str,
+) -> AuthDecision:
+    """Phase 9 (T-6) — the one new authorization primitive this task
+    adds. For admin-dashboard surfaces that are NOT scoped to a single
+    resource's owner (list-all-customers, list-all-calls, list-all-
+    bookings, analytics) — there is no `resource_customer_id` to compare
+    an owner against, so `authorize_resource_access`'s owner branch
+    doesn't apply here at all.
+
+    Why this can't just be `actor.has_permission(required_permission)`:
+    several permissions in this codebase are deliberately dual-purpose —
+    e.g. CUSTOMERS_READ is held by the bare CUSTOMER role (so
+    `authorize_customer_profile_access` lets someone read their OWN
+    profile) AND by staff roles (so the same permission also lets staff
+    read ANYONE's profile via that same function's staff-permission
+    branch). A single-customer lookup can tell those two cases apart
+    because it has a `target_customer_id` to compare against
+    `actor.customer_id`. A LIST-ALL endpoint has no such target to
+    compare against — if it only checked `has_permission`, a bare
+    CUSTOMER would pass this check for CUSTOMERS_READ and see every
+    OTHER customer's data too, which is exactly the IDOR/broken-access-
+    control failure mode `docs/WORK_BREAKDOWN_STRUCTURE.md` WBS-5's
+    security constraints warn against ("do not add a route that's
+    reachable by any authenticated user by default").
+
+    This function closes that gap the same way `authorize_resource_
+    access`'s non-owner branch already does for a single resource:
+    require BOTH `actor.is_staff` (any role beyond bare CUSTOMER) AND
+    the specific permission — never permission-string membership alone
+    (§8). See `tests/test_security_core.py::OwnershipTests` for the
+    proof that a bare CUSTOMER holding CUSTOMERS_READ is still denied
+    here even though `has_permission` alone would say yes.
+
+    No verification-token path exists here, deliberately, same reasoning
+    as `authorize_customer_profile_access`/`authorize_payment_access`: a
+    booking-verification token authorizes acting on one booking, never
+    browsing an admin-wide list.
+    """
+    if actor.is_staff and actor.has_permission(required_permission):
+        return _allow("staff_permission")
+    return _deny("not_staff_or_missing_permission", "FORBIDDEN")
+
+
 def authorize_payment_access(
     actor: CurrentActor,
     *,

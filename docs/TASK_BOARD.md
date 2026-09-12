@@ -590,7 +590,441 @@ dependency).
 
 ---
 
-## Proposed (not yet authorized)
+### T-6 — Phase 9: admin dashboard
+- **Status:** AUTHORIZED — moved from Proposed to Authorized on the
+  project owner's explicit instruction, 2026-09-11 (this session), same
+  mechanism T-4/T-5 used ("Execute and authorize T-6"). Implementation
+  done this session; the FastAPI/SQLAlchemy layer is **written, reviewed,
+  NOT executed** (same standing sandbox constraint as every other
+  service-layer file in this project — T-1's Attempt log, unchanged);
+  the Next.js pages are **written, NOT type-checked against a real
+  toolchain** — `npm install` is blocked (no network egress), so there
+  is no `node_modules` in this sandbox to run `tsc --project`/`next
+  build` against. A standalone syntax-only pass was still run this
+  session — see "Testing status" below for exactly what that did and
+  didn't prove.
+- **Scope:** `/api/v1/admin`, `/api/v1/customers`, `/api/v1/calls` API
+  routes (read-heavy, RBAC-gated using the existing `ADMIN`/`SUPER_ADMIN`
+  roles and `admin.*`/`calls.*` permissions) + corresponding Next.js
+  admin pages.
+- **NOT in scope:** any change to booking/payment/Vapi business logic —
+  confirmed as built: none of `BookingService`/`PaymentService`/
+  `CancellationService`/the Vapi dispatch functions were touched.
+  Specifically also NOT built (see "Decisions/deviations" below):
+  `create_customer` as a standalone admin action; WBS-5.5's new Vapi
+  tools (`update_passenger`/`get_customer`/etc. — that's T-8, which
+  depends on this task and is now unblocked); a chart/analytics
+  library — no new npm dependency was added (network egress to npm is
+  blocked here regardless, same constraint as everything else); a
+  quote-to-booking conversion metric (see analytics honesty note below).
+- **Depends on:** T-1 was "recommended first" per the original
+  Proposed-section wording — not taken as a hard blocker, same reasoning
+  T-3/T-4/T-5 already used: T-1 is itself blocked on the identical
+  sandbox constraint this session has, so waiting for it would mean
+  never authorizing T-6 at all.
+- **Authorized by:** project owner, 2026-09-11 (this session, explicit
+  instruction to "Execute and authorize T-6").
+- **What was built:**
+  - `app/core/security/ownership.py` / `app/api/deps_auth.py`
+    (EXTENDED) — `authorize_staff_access()` / `require_staff_permission()`,
+    the one new authorization primitive this task needed. Closes a real
+    gap, not a hypothetical one: `CUSTOMERS_READ` is held by the bare
+    `CUSTOMER` role too (for `authorize_customer_profile_access` to let
+    someone read their OWN profile) — a naive `require_permission(
+    CUSTOMERS_READ)` on a list-ALL-customers endpoint would let that same
+    customer list every OTHER customer too. `/api/v1/admin/*` and
+    `/api/v1/calls/*` do NOT need this — confirmed by grep and pinned in
+    a test (`tests/test_security_core.py::RbacTests::
+    test_customer_role_never_holds_admin_or_calls_permissions`) that
+    `admin.*`/`calls.*` permissions are never granted to bare `CUSTOMER`
+    at all, so plain `require_permission()` is already staff-only there.
+  - `app/repositories/{customer,call,tool_execution,booking,payment}_repository.py`
+    (EXTENDED) + `app/repositories/audit_log_repository.py` (NEW) —
+    list/get/count methods for the admin surfaces; `AuditLogRepository`
+    is this table's first reader anywhere in the codebase (it had a
+    writer, `record_audit_event()`, since Phase 4, and no reader until
+    now).
+  - `app/core/admin/analytics.py` (NEW) — pure, dependency-free rate/
+    revenue calculations, mirroring T-5's `content.py` discipline exactly
+    so the actual arithmetic gets real, executed test coverage in this
+    sandbox. **Honesty note, stated here because it's a scope decision,
+    not just a code comment:** the Master Build Prompt's original idea
+    of a "quote conversion rate" is not computable from what this schema
+    persists today — confirmed by reading `booking_service.py`:
+    `create_booking()` writes `status="CONFIRMED"` directly, and
+    `"QUOTE"` (present in `BOOKING_STATUSES`) is never actually written
+    to a stored `Booking.status` by any code path — an abandoned fare
+    quote simply expires in `FlightService`'s in-memory cache and leaves
+    no row behind. Tracking real quote conversion would need a new
+    persisted "quote attempt" record — a schema change, outside this
+    task's scope. What this module reports instead, and what it's
+    honestly able to report: a booking-status breakdown, a PAYMENT
+    conversion rate (bookings that ever reached a paid state), a
+    cancellation rate, and gross/net revenue computed from actually-
+    `SUCCEEDED` `Payment` rows (never from `Booking.total_price`, which
+    is a quoted/snapshotted price, not proof money was collected).
+  - `app/services/{customer,call,admin}_service.py` (NEW) —
+    permission-agnostic, same discipline as every other service in this
+    codebase (`RBACService` etc. — MASTER_RULES.md §2: authorization
+    decisions live in the dependency layer, never re-checked in a
+    service). `CustomerService.update_customer()` is the one write this
+    task adds (contact-info correction only — see "Decisions/deviations"
+    below); everything else is read-only.
+  - `app/schemas/{customer,call,admin}.py` (NEW), `app/schemas/common.py`
+    (EXTENDED — `PageMeta`/`make_page_meta()`, a new pagination
+    convention; none existed anywhere in this codebase before this task,
+    since the one pre-existing list endpoint, `GET /bookings/mine`,
+    returns one customer's own bookings unpaginated). `AdminBookingOut`
+    extends the pre-existing customer-facing `BookingOut` rather than
+    modifying it (adds `id`/`customer_id`/`customer_email`, which a
+    staff list/detail view needs to link and filter, and which a
+    customer viewing their own booking has no need to see) — this means
+    none of `BookingOut`'s three existing customer-facing callers
+    (`create_booking`/`lookup_booking`/`list_my_bookings`, all in
+    `app/api/routes/bookings.py`) changed at all.
+  - `app/api/routes/{customers,calls,admin}.py` (NEW), registered in
+    `app/main.py`. All three reuse `_booking_out()` (and, transitively,
+    its `_masked_passport()` passport-redaction logic) from
+    `app/api/routes/bookings.py` rather than re-implementing
+    passenger/passport display — one code path for that, not a second
+    one that could drift out of sync with the first.
+  - `apps/web/lib/adminTypes.ts` (NEW) — hand-written TypeScript mirrors
+    of the five new/changed backend schemas, same "no codegen step"
+    precedent as `contexts/AuthContext.tsx`'s existing `CurrentUser`
+    type; `apps/web/lib/api.ts` (EXTENDED) — added `api.patch()` (the
+    generic `apiFetch` already handled PATCH's CSRF header, this is just
+    the same convenience wrapper `api.post` already has);
+    `apps/web/middleware.ts` (EXTENDED) — `/admin` added to the UX-only
+    redirect gate, same disclaimer as the pre-existing `/account` entry.
+  - `apps/web/components/admin/{StatusBadge,Pagination,ErrorNotice}.tsx`
+    (NEW) — this app's first `components/` directory; small, reused
+    across all seven admin pages rather than duplicated per page.
+  - `apps/web/app/admin/layout.tsx` (NEW) — a client-side staff gate
+    (mirrors the backend's own `is_staff` definition exactly: any role
+    other than bare `CUSTOMER`) plus the section nav. UX-only, same
+    disclaimer as every other client-side gate in this app (§35) — each
+    page's own API calls are re-checked server-side against the specific
+    permission that page actually needs, so a `SUPPORT_AGENT` (staff,
+    but no `admin.read`) who passes this coarse gate still gets a real
+    403 from `/api/v1/admin/analytics`, handled inline via
+    `ErrorNotice`.
+  - `apps/web/app/admin/{page,bookings/page,bookings/[id]/page,
+    customers/page,customers/[id]/page,calls/page,calls/[id]/page}.tsx`
+    (NEW) — the seven pages: analytics overview, bookings list + detail
+    (booking + payment attempts + full audit trail), customers list +
+    detail (with the contact-info edit form), calls list + detail (with
+    the tool-execution log, including each call's redacted tool
+    arguments — see `ToolExecutionOut`'s schema docstring for why
+    showing that is intentional, not an oversight).
+- **Decisions/deviations from the original Proposed-section wording,
+  recorded rather than silently made:**
+  1. **No admin "create customer" action** — WBS-5.1 listed "get/create/
+     update." Customers are already created implicitly at booking time
+     (`CustomerRepository.get_or_create()`, pre-existing, Phase 1); a
+     separate staff-initiated "create a customer with no booking" action
+     wasn't an identified need and would be new product surface, not
+     "read-heavy... manage surface on top of what exists" (T-6's own
+     scope line). Not built; `update` (contact-info only) was.
+  2. **`/api/v1/admin/*` gated on `admin.read` alone, not `bookings.read`/
+     `payments.read` too** — T-6's Proposed-section wording specifically
+     named `admin.*`/`calls.*` permissions for this namespace, not
+     resource-specific ones. This means `FINANCE` (which holds
+     `BOOKINGS_READ`/`PAYMENTS_READ` but not `ADMIN_READ`) cannot reach
+     the admin bookings/analytics views through this route, even though
+     they arguably have a legitimate reason to. Whether `FINANCE` should
+     reach these views is a product decision this task did NOT make
+     unilaterally — see "Remaining to close this task," below.
+  3. **Audit trail queries `AuditLog.resource_id` by both `booking.pnr`
+     AND `str(booking.id)`, merged** — confirmed by grep, EVERY current
+     `resource="booking"` `record_audit_event()` call site
+     (`booking_service.py`/`cancellation_service.py`/
+     `passenger_service.py` — all of them) passes `resource_id=pnr`,
+     never `str(booking.id)`. So today the `str(booking.id)` half of the
+     query always returns zero rows — it isn't covering split
+     pre-existing data, there isn't any yet. It's deliberately
+     defensive: `AuditLog.resource_id` is an unconstrained `String`
+     column with nothing enforcing its shape at write time, and this
+     endpoint's whole purpose (WBS-5's exit criterion — "see a booking's
+     full audit trail") would break silently, with no error, the day a
+     future call site inconsistently writes the other shape. See
+     `app/services/admin_service.py::AdminService.get_booking_detail`'s
+     docstring for the full reasoning.
+  4. **Tool-execution arguments ARE shown to staff, not hidden** —
+     `ToolExecution.arguments_redacted` is scrubbed at WRITE time (see
+     that model's own docstring: "it should be safe to hand a staff
+     member the contents of this table without also handing them a live
+     bearer credential"). `ToolExecutionOut` trusts that write-time
+     guarantee and shows the redacted arguments verbatim — this is the
+     stated purpose of redacting them, not a new risk this task
+     introduced.
+- **Testing status (§7 — stated exactly, not rounded up):**
+  - **Verified locally, this session:** `cd apps/api && python3 -m
+    unittest tests.test_core_logic tests.test_security_core
+    tests.test_vapi_core tests.test_payments_core tests.test_notifications_core
+    tests.test_admin_core -v` → `OK`, 289 tests, 0 failures, 0 errors.
+    267 pre-existing (T-1 baseline through T-5) + 9 new
+    (`StaffAccessTests` × 8 + one new `RbacTests` test pinning that
+    `CUSTOMER` never holds `admin.*`/`calls.*`) in `test_security_core.py`
+    + 13 new in `tests/test_admin_core.py` (NEW file — analytics
+    arithmetic: empty-input zero-division safety, multi-currency
+    grouping never summed together, net-vs-gross revenue, daily-point
+    sorting, the "most statuses in `BOOKING_STATUSES` are never actually
+    written" edge case). `tests.test_api_security tests.test_vapi_api`
+    re-run separately: still skip cleanly, 8 skipped, unchanged — no
+    regression to the skip behavior itself.
+  - **Written, reviewed, NOT executed (needs SQLAlchemy/FastAPI, not
+    installed here — same standing constraint as literally every other
+    service/route file in this project since T-1's Attempt log):**
+    every repository addition, `app/core/admin/analytics.py`'s CALLERS
+    (`AdminService`'s two SQLAlchemy queries feeding it — the pure
+    arithmetic itself IS executed, see above), all three new services,
+    all three new route files, `app/main.py`'s router registration.
+  - **Written, syntax-checked via a standalone `tsc --noResolve`
+    pass, NOT type-checked against a real toolchain:** all seven new
+    Next.js pages, the three new shared components, `lib/adminTypes.ts`.
+    `npm install` is blocked in this sandbox (no network egress to the
+    npm registry — the same constraint documented for `pip`/PyPI since
+    T-1), so there is no `node_modules` here to run a real `tsc
+    --project tsconfig.json`/`next build` against. What WAS actually
+    run: the global `tsc` binary already present in this sandbox,
+    invoked per-file with `--noResolve --skipLibCheck` (so it does not
+    try to resolve `react`/`next`/local imports, which would all fail
+    without `node_modules` regardless) — this catches genuine syntax
+    errors (`TS1xxx` codes) but proves nothing about type-correctness
+    against React/Next's actual type definitions. Result: zero `TS1xxx`
+    errors across all ten new/modified `.ts`/`.tsx` files. Every
+    remaining diagnostic (`TS2307` "cannot find module," `TS7026`/
+    `TS7006` implicit-`any` from the missing `JSX.IntrinsicElements`,
+    `TS2503` "cannot find namespace 'React'," `TS18046` "'err' is of
+    type 'unknown'") was cross-checked against the SAME diagnostics
+    appearing, under the identical harness, in `contexts/AuthContext.tsx`
+    — pre-existing, previously-accepted code this task did not touch —
+    confirming these are artifacts of the missing `node_modules`, not
+    something new this task introduced. This is evidence, not proof; a
+    real `next build` could still surface something this harness
+    structurally cannot catch (prop-type mismatches against React's
+    actual types, for one).
+  - **Requires external verification / BLOCKED, same class as T-1:**
+    - `npm install` in an environment with real network access, then a
+      real `tsc --project tsconfig.json` / `next build` / `next lint`
+      against these ten files.
+    - `pip install -r requirements.txt` (per T-1) + a real Postgres
+      database, then an end-to-end exercise of all seven new HTTP
+      endpoints: `authorize_staff_access` denying a bare `CUSTOMER` on
+      `GET /api/v1/customers` for real (not just at the pure-function
+      level `StaffAccessTests` already proves); `AdminService.
+      get_booking_detail`'s two-query audit-trail merge actually
+      returning rows against a real database; the customer-contact PATCH
+      actually raising `ConflictError` on a real email collision, not
+      just the pre-check logic reading correctly.
+    - A real browser click-through of all seven pages against a running
+      backend — confirming the pagination controls, the status filters,
+      and the edit-save-reload cycle on the customer page all behave as
+      designed, not just as written.
+- **Remaining to close this task:**
+  1. The `npm install`/`pip install` + real-database items above, once
+     this project runs somewhere with network egress (same standing item
+     as T-1/T-4/T-5).
+  2. A product decision on whether `FINANCE` should reach
+     `/api/v1/admin/bookings`/`/api/v1/admin/analytics` (see
+     "Decisions/deviations" #2) — if yes, that route's permission gate
+     needs `Permission.BOOKINGS_READ`/`PAYMENTS_READ` added alongside
+     `ADMIN_READ`, which is a one-line change once decided.
+  3. T-8 (Vapi tools) and T-2 (Phase 6/7 numbering) remain open,
+     unaffected by this task.
+
+---
+
+### T-7 — Phase 10: testing & hardening
+- **Status:** AUTHORIZED — moved from Proposed to Authorized on the
+  project owner's explicit instruction, 2026-09-12 (this session), same
+  mechanism T-4/T-5/T-6 used ("Execute and authorize T-7"). All three
+  scope items done this session. Two real bugs found and fixed along the
+  way (not hypothetical — see "What was built"); this task's own scope
+  is otherwise unchanged from the Proposed-section wording below.
+- **Scope:** Playwright E2E suite (needs real customer-facing web pages —
+  likely sequenced after T-6 or a minimal booking UI); the voice
+  conversation test suite from spec §56; a full security-testing pass
+  repeating `PROJECT_HANDOFF_PHASE_5.md` §11's checklist against
+  whatever T-3/T-4/T-5/T-6 added.
+- **NOT in scope:** WBS-6.4 (audit-log actor-spoofing fix — that's T-8),
+  WBS-6.5 (GDPR), WBS-6.6 (i18n). Building a customer-facing booking UI
+  so the full Playwright E2E suite (not just the admin half) could be
+  written — the Proposed-section wording itself flagged this as an open
+  sequencing question ("whether that's its own small task or folds into
+  WBS-6 itself"); this session did not resolve that question
+  unilaterally by building new production frontend surface under a
+  "testing & hardening" task. See "Decisions/deviations" below.
+- **Depends on:** the features it's testing existing first — confirmed
+  true for the admin dashboard (T-6, done) and everything T-3/T-4/T-5
+  added; NOT true yet for the customer-facing flow (see above).
+- **Authorized by:** project owner, 2026-09-12 (this session, explicit
+  instruction to "Execute and authorize T-7").
+- **What was built:**
+  1. **`tests/e2e/admin/`** (NEW — `package.json`, `playwright.config.ts`,
+     `tests/{fixtures,auth-gate,navigation,sections}.{ts,spec.ts}`, plus
+     its own `README.md`) — a real Playwright suite against the actual
+     admin dashboard component source (Phase 9/T-6): the login→`/admin`
+     redirect gate, dashboard section headings, nav between all four
+     sections with active-link assertion, and each of
+     bookings/customers/calls' table columns + row-to-detail navigation
+     (the latter self-skipping when a target environment's database has
+     no rows yet, since this suite has no seed step of its own). Every
+     selector — heading text, table column names, the customers search
+     placeholder, nav labels — was copied from the real `.tsx` source,
+     not guessed.
+     - **Real bug found and fixed while writing it:**
+       `apps/web/app/login/page.tsx` was ignoring the `next=` query
+       parameter `admin/layout.tsx` sends it (`/login?next=/admin`)
+       entirely, always landing on `/account` regardless — so a staff
+       member bounced off `/admin` to sign in never actually landed back
+       there without an extra manual click. Fixed: `next` is now read via
+       `useSearchParams()` (wrapped in the `<Suspense>` boundary the
+       Next.js App Router requires for it — no other page in this repo
+       used `useSearchParams()` before, so there was no existing
+       in-repo precedent to match; this is Next.js's own documented
+       pattern) and honored when it's an internal path (rejects the
+       `//...`-shaped open-redirect case, falls back to the original
+       `/account` default otherwise). `tests/e2e/admin/tests/auth-
+       gate.spec.ts` is the regression test.
+     - **Customer-facing half genuinely not built** — see "NOT in scope"
+       above. `tests/e2e/README.md` records the gap plainly rather than
+       silently.
+  2. **`apps/api/tests/test_voice_conversation_core.py`** (NEW) — 29
+     dependency-free tests, one `unittest.TestCase` per spec-§56 scenario
+     WBS-6.2 names (missing-info collection, no-booking-without-a-quote,
+     quote-only-on-price-question, verify-before-cancel, human-transfer-
+     on-request, never-reveal-passport-number — six, not the "7 example
+     test cases" WBS-6.2 claims; the original Master Build Prompt text
+     isn't committed anywhere in this repo to check the missing seventh
+     case against, so the mismatch is reproduced honestly in that file's
+     own docstring rather than resolved by inventing a plausible-sounding
+     case). Every assertion traces to a real function in `app/core/vapi/`,
+     `app/core/security/vapi_authorization.py`, `app/providers/airline/`,
+     or `app/core/encryption.py` — nothing simulates LLM behavior, since
+     that's not dependency-free-testable; the file's own docstring is
+     explicit about testing "the backend guarantee that makes the
+     scenario true regardless of what the LLM does," per MASTER_RULES.md's
+     "the backend is always the source of truth" framing, not the live
+     assistant's actual conversational behavior (that half still needs
+     WBS-2.2-2.5's live phone number — still BLOCKED, unchanged by this
+     task).
+     - **Real bug found and fixed to make this suite possible:**
+       `app/core/encryption.py` imported `app.core.config`/`app.core.
+       logging` at MODULE level, even though `mask_for_speech()` — the
+       one function the "never reveal passport number" scenario actually
+       depends on — needs neither. Since pydantic/structlog aren't
+       installed in this (or any) sandbox this project has run in, that
+       coupling meant this exact safety-critical function had never once
+       been exercised by this project's dependency-free test tier before
+       today. Both imports are now lazy (moved inside the functions that
+       actually need them, matching the pattern `_get_fernet` already
+       used for `cryptography.fernet`) — `encrypt_sensitive`/
+       `decrypt_sensitive`'s behavior is unchanged either way.
+  3. **Security-testing pass** (WBS-6.3, `PROJECT_HANDOFF_PHASE_5.md`
+     §11's checklist repeated against T-3/T-4/T-5/T-6's new code) —
+     reviewed: `payments.py`'s refund route, `customers.py`/`calls.py`/
+     `admin.py` and the new `authorize_staff_access()`/
+     `require_staff_permission()` primitives (T-6), `email_provider.py`/
+     `sms_provider.py`/`notification_service.py` (T-5), `scripts/
+     setup_vapi.py` (T-4), against all twelve §11 categories. One real
+     finding, fixed: `notification_service.py`'s three delivery-failure
+     audit calls stored the provider's raw `message` string in
+     `AuditLog.event_metadata` alongside `error_code` — Twilio's
+     (documented codes 21211/21614) and Resend's own error formats echo
+     the rejected phone number/email back inside that text, and T-6's new
+     admin audit-trail endpoint renders `event_metadata` verbatim, so a
+     delivery failure could leak a customer's own contact details into a
+     log surface. `error_message` dropped from all three call sites;
+     `error_code` kept. No new authn/authz/SSRF/webhook-spoofing/secret-
+     leakage/tool-or-prompt-injection findings in T-3/T-4/T-5/T-6's own
+     new code — see `docs/handoffs/2026-09-12-t7-testing-hardening.md`
+     for the full checklist-by-checklist writeup, including what was
+     reviewed and found clean, not just what was fixed. Two items
+     reviewed and deliberately NOT changed, recorded instead — see
+     "Decisions/deviations" below.
+- **Decisions/deviations from the original Proposed-section wording,
+  recorded rather than silently made:**
+  1. **Customer-facing Playwright E2E not built** — confirmed by
+     inspection that `apps/web/app/` still only has `account/`, `admin/`,
+     `login/`, `register/`, and a status `page.tsx`; writing E2E specs
+     against a search/book/lookup/cancel/modify flow that has no
+     corresponding pages would mean fabricating a UI to test, which
+     MASTER_RULES.md's "never fabricate" rules out. Building that UI is
+     new production frontend surface, not "testing & hardening," and the
+     Proposed-section wording itself left the sequencing question open
+     rather than settling it — this session did not settle it
+     unilaterally either. See "Remaining to close this task."
+  2. **`cancellation_service.py`'s Stripe-refund-failure audit metadata
+     left unchanged** — the same raw-`str(exc)`-in-`event_metadata`
+     shape as the `notification_service.py` finding above, but for a
+     different provider (Stripe, via `PaymentProviderError`) whose error
+     text is less likely to echo request PII, and this wasn't
+     independently confirmed against live Stripe error text the way
+     Twilio's/Resend's documented formats were. Fixing one confirmed
+     instance and one plausible-but-unconfirmed sibling with the same
+     one-line change felt like over-generalizing a fix based on pattern-
+     matching rather than evidence; recorded in `docs/PROJECT_STATE.md`'s
+     "Known residual security/integrity findings" instead of silently
+     patched or silently ignored.
+  3. **T-6's new admin routes left without rate limiting** —
+     `/api/v1/customers`, `/api/v1/calls`, `/api/v1/admin/*` carry none,
+     unlike `bookings.py`/`auth.py`/the Vapi webhook (which do). Reviewed
+     and deliberately not flagged as requiring a fix: every admin route
+     already requires staff authentication + a specific RBAC permission —
+     a materially smaller, more accountable population than the public
+     unauthenticated surfaces rate limiting protects elsewhere in this
+     codebase. Whether the project's threat model wants to cover
+     compromised-staff-credential bulk scraping is a product decision
+     this task did not make unilaterally; recorded in
+     `docs/PROJECT_STATE.md` in case it's wanted later.
+- **Testing status (§7 — stated exactly, not rounded up):**
+  - **Verified locally, this session:** `cd apps/api && python3 -m
+    unittest tests.test_core_logic tests.test_security_core
+    tests.test_vapi_core tests.test_payments_core
+    tests.test_notifications_core tests.test_admin_core
+    tests.test_voice_conversation_core -v` → `OK`, 318 tests, 0 failures,
+    0 errors. 289 pre-existing (T-1 baseline through T-6) + 29 new in the
+    new `tests.test_voice_conversation_core`. `tests.test_api_security
+    tests.test_vapi_api` re-run separately: still skip cleanly, 8
+    skipped, unchanged. `app/core/encryption.py`'s `mask_for_speech`
+    independently confirmed importable and correct without pydantic/
+    structlog installed (`python3 -c "from app.core.encryption import
+    mask_for_speech; ..."` — succeeded, where it previously raised
+    `ModuleNotFoundError`).
+  - **Written, syntax-checked via a standalone `tsc` pass (same harness
+    T-6 established — `--skipLibCheck`, no `node_modules`), NOT type-
+    checked against a real toolchain, NOT executed (no Node network
+    access to `npm install` `@playwright/test` in this or any sandbox
+    this project has run in):** all of `tests/e2e/admin/`'s `.ts` files,
+    and the modified `apps/web/app/login/page.tsx`. Zero syntax errors in
+    any of them; only expected missing-module noise (no `node_modules`
+    installed here, same as T-6's own harness produced).
+  - **Written, reviewed by inspection, NOT independently unit-tested
+    (needs SQLAlchemy, not installed here):** the
+    `notification_service.py` audit-metadata fix — matches this
+    codebase's existing `arguments_redacted`/"field names only"
+    redaction pattern elsewhere, but `notification_service.py` itself has
+    never been importable in this sandbox's dependency-free tier, same
+    standing constraint as every other service-layer file since T-1.
+  - **Requires external verification / BLOCKED, same class as T-1:**
+    - `npm install` in an environment with real network access, then
+      `npx playwright test` against a real running web+api+db stack with
+      a bootstrapped staff account — `tests/e2e/admin/README.md` has the
+      exact steps.
+    - WBS-2.2-2.5's live Vapi phone number, for the voice-conversation
+      suite's other half (actual LLM behavior under the real system
+      prompt) — unchanged, still blocked on a real Vapi account.
+- **Remaining to close this task:**
+  1. A product/planning decision on the customer-facing booking UI's
+     sequencing (see "Decisions/deviations" #1) — once it exists,
+     `tests/e2e/`'s customer-flow half can be written the same way the
+     admin half was this session.
+  2. The `npm install`/live-Vapi-account items above, once this project
+     runs somewhere with that access (same standing item as
+     T-1/T-4/T-5/T-6).
+  3. T-2 (Phase 6/7 numbering) and T-8 (Vapi tools, audit-log fix) remain
+     open, unaffected by this task.
 
 ### T-2 — Decide the Phase 6/7 numbering question
 - **Scope:** A decision (recorded in `docs/PROJECT_ROADMAP.md` §6.1 and
@@ -603,34 +1037,23 @@ dependency).
   source-of-truth item 9).
 - **Depends on:** nothing technical — a product/planning call.
 
-### T-6 — Phase 9: admin dashboard
-- **Scope:** `/api/v1/admin`, `/api/v1/customers`, `/api/v1/calls` API
-  routes (read-heavy, RBAC-gated using the existing `ADMIN`/`SUPER_ADMIN`
-  roles and `admin.*`/`calls.*` permissions — do not invent new
-  permission strings without checking `rbac.py` first) + corresponding
-  Next.js admin pages.
-- **NOT in scope:** any change to booking/payment/Vapi business logic —
-  this is read/manage surface on top of what exists.
-- **Depends on:** T-1 recommended first (the RBAC HTTP layer this needs
-  has never been executed either).
-
-### T-7 — Phase 10: testing & hardening
-- **Scope:** Playwright E2E suite (needs real customer-facing web pages —
-  likely sequenced after T-6 or a minimal booking UI); the voice
-  conversation test suite from spec §56; a full security-testing pass
-  repeating `PROJECT_HANDOFF_PHASE_5.md` §11's checklist against
-  whatever T-3/T-4/T-5/T-6 added.
-- **Depends on:** the features it's testing existing first.
-
 ### T-8 — Close this audit's newly found gaps
 - **Scope:** `update_passenger`/`get_customer`/`create_customer`/
   `update_customer`/`get_airport`/`search_airports`/`get_faq` Vapi tools
-  (`docs/PROJECT_ROADMAP.md` §6.4); the audit-log actor-spoofing fix on
-  the direct REST routes (§6.6); confirming whether Vapi has a native
-  `end_call` capability that makes a custom tool unnecessary.
-- **Depends on:** whichever of T-6 (customers) or T-4 (calls) is done
-  first — several of these tools have no backing service to call until
-  then.
+  (`docs/PROJECT_ROADMAP.md` §6.4) — this is WBS-5.5, deliberately left
+  out of T-6's scope (see T-6's entry above, "NOT in scope"); the
+  audit-log actor-spoofing fix on the direct REST routes (§6.6);
+  confirming whether Vapi has a native `end_call` capability that makes
+  a custom tool unnecessary.
+- **Depends on:** nothing blocking anymore — both T-4 (calls) and T-6
+  (customers) are done, so `CallRepository`/`CustomerRepository` and
+  `CallService`/`CustomerService` all exist as backing services for
+  these tools now. T-6 specifically did NOT build `create_customer` (see
+  its "Decisions/deviations" — customers are created implicitly at
+  booking time; `CustomerRepository.get_or_create` already exists) or
+  `get_airport`/`search_airports`/`get_faq` (no airport/FAQ data model
+  exists yet at all — that's new scope for whoever picks up T-8, not
+  just a missing tool wrapper around something already built).
 
 ---
 

@@ -33,6 +33,7 @@ from app.core.security.ownership import (
     authorize_customer_profile_access,
     authorize_passenger_access,
     authorize_payment_access,
+    authorize_staff_access,
 )
 from app.core.security.password_policy import MIN_LENGTH, validate_password_strength
 from app.core.security.passwords import Argon2Parameters, PasswordHasher
@@ -198,6 +199,19 @@ class RbacTests(unittest.TestCase):
         perms = permissions_for_roles([Role.BOOKING_AGENT.value])
         self.assertTrue(has_any_permission(perms, [Permission.ADMIN_MANAGE.value, Permission.BOOKINGS_READ.value]))
         self.assertFalse(has_all_permissions(perms, [Permission.BOOKINGS_READ.value, Permission.ADMIN_MANAGE.value]))
+
+    def test_customer_role_never_holds_admin_or_calls_permissions(self):
+        # Phase 9 (T-6) design assumption, pinned here: app/api/routes/
+        # admin.py and calls.py gate on plain require_permission(ADMIN_
+        # READ)/require_permission(CALLS_READ) WITHOUT an extra is_staff
+        # check, because — unlike CUSTOMERS_READ — no admin.* or calls.*
+        # permission is ever granted to the bare CUSTOMER role. If this
+        # test ever fails after an edit to ROLE_PERMISSIONS, those two
+        # route files need require_staff_permission() instead, not just
+        # this test updated.
+        perms = permissions_for_roles([Role.CUSTOMER.value])
+        admin_or_calls = [p for p in perms if p.startswith("admin.") or p.startswith("calls.")]
+        self.assertEqual(admin_or_calls, [], f"CUSTOMER unexpectedly grants: {admin_or_calls}")
 
 
 def _human_actor(*, user_id="u1", customer_id=None, roles=(), request_id="req_test") -> CurrentActor:
@@ -370,6 +384,75 @@ class OwnershipTests(unittest.TestCase):
                     vapi_actor, booking_customer_id="cust_A", booking_id="bk_1", required_permission=permission,
                 )
                 self.assertFalse(decision.allowed)
+
+
+class StaffAccessTests(unittest.TestCase):
+    """Phase 9 (T-6) — authorize_staff_access(), used for admin-wide LIST
+    endpoints (list-all-customers, list-all-calls, list-all-bookings,
+    analytics) that have no single resource owner to compare against."""
+
+    def test_admin_with_permission_allowed(self):
+        admin = _human_actor(user_id="a1", customer_id=None, roles=[Role.ADMIN.value])
+        decision = authorize_staff_access(admin, required_permission=Permission.CUSTOMERS_READ.value)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "staff_permission")
+
+    def test_support_agent_with_permission_allowed(self):
+        agent = _human_actor(user_id="s1", customer_id=None, roles=[Role.SUPPORT_AGENT.value])
+        decision = authorize_staff_access(agent, required_permission=Permission.CALLS_READ.value)
+        self.assertTrue(decision.allowed)
+
+    def test_bare_customer_with_the_same_permission_string_denied(self):
+        # THE bug this function exists to prevent: Role.CUSTOMER also
+        # holds CUSTOMERS_READ (see rbac.py — it's what lets a customer
+        # read their OWN profile via authorize_customer_profile_access).
+        # A naive `actor.has_permission(...)` check alone would let this
+        # actor list every OTHER customer too — authorize_staff_access
+        # must deny it because actor.is_staff is False.
+        customer = _human_actor(user_id="u1", customer_id="cust_A", roles=[Role.CUSTOMER.value])
+        self.assertTrue(customer.has_permission(Permission.CUSTOMERS_READ.value))  # sanity: permission IS held
+        decision = authorize_staff_access(customer, required_permission=Permission.CUSTOMERS_READ.value)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.error_code, AuthErrorCode.FORBIDDEN.value)
+
+    def test_staff_without_the_specific_permission_denied(self):
+        # Staff-shaped (non-CUSTOMER role) but the ROLE doesn't carry
+        # this particular permission — permission still governs, not
+        # role membership alone (§8).
+        support = _human_actor(user_id="s1", customer_id=None, roles=[Role.SUPPORT_AGENT.value])
+        decision = authorize_staff_access(support, required_permission=Permission.PAYMENTS_REFUND.value)
+        self.assertFalse(decision.allowed)
+
+    def test_anonymous_verified_actor_denied_even_with_a_booking_verification(self):
+        # No verification-token path exists for this function at all —
+        # an anonymous caller who verified one booking must never be
+        # able to browse an admin-wide list.
+        verified = CurrentActor(
+            actor_type=ActorType.ANONYMOUS_VERIFIED, verified_booking_id="bk_1",
+            verified_purpose="view_booking", booking_verification_status="VERIFIED",
+        )
+        decision = authorize_staff_access(verified, required_permission=Permission.CUSTOMERS_READ.value)
+        self.assertFalse(decision.allowed)
+
+    def test_vapi_agent_denied(self):
+        vapi_actor = CurrentActor(actor_type=ActorType.VAPI_AGENT, call_id="call_1", vapi_authenticated=True)
+        decision = authorize_staff_access(vapi_actor, required_permission=Permission.CALLS_READ.value)
+        self.assertFalse(decision.allowed)
+
+    def test_super_admin_allowed_for_any_permission(self):
+        super_admin = _human_actor(user_id="sa1", customer_id=None, roles=[Role.SUPER_ADMIN.value])
+        for permission in (Permission.ADMIN_READ.value, Permission.CUSTOMERS_READ.value, Permission.CALLS_READ.value):
+            with self.subTest(permission=permission):
+                decision = authorize_staff_access(super_admin, required_permission=permission)
+                self.assertTrue(decision.allowed)
+
+    def test_no_verification_purpose_parameter_exists(self):
+        # Pins the design decision (see docstring) the same way
+        # test_payment_access_never_accepts_a_verification_token does
+        # for authorize_payment_access.
+        import inspect
+
+        self.assertNotIn("verification_purpose", inspect.signature(authorize_staff_access).parameters)
 
 
 class CriticalSecurityTest(unittest.TestCase):

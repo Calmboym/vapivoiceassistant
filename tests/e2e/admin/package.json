@@ -1,0 +1,14 @@
+{
+  "name": "@charter123/e2e-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "T-7 (docs/TASK_BOARD.md, WBS-6.1) Playwright suite for the admin dashboard (Phase 9 / T-6). WRITTEN, NEVER EXECUTED — see ../README.md for why (no Node/npm network access in any sandbox this project has run in, and no running web+api+db stack to point it at even if npm install were possible here).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.48.2"
+  }
+}

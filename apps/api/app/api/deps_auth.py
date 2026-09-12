@@ -35,6 +35,7 @@ from app.core.security.ownership import (
     authorize_customer_profile_access,
     authorize_passenger_access,
     authorize_payment_access,
+    authorize_staff_access,
 )
 from app.core.security.rbac import Permission
 from app.db.session import get_db
@@ -99,6 +100,31 @@ def require_permission(permission: str) -> Callable[..., CurrentActor]:
     def _dependency(actor: CurrentActor = Depends(require_authenticated_user)) -> CurrentActor:
         if not actor.has_permission(permission):
             raise AuthError(AuthErrorCode.PERMISSION_DENIED, "You don't have permission to do that.")
+        return actor
+
+    return _dependency
+
+
+def require_staff_permission(permission: str) -> Callable[..., CurrentActor]:
+    """Phase 9 (T-6) — for admin-dashboard LIST/overview endpoints that
+    are not scoped to one resource's owner (list-all-customers,
+    list-all-calls, list-all-bookings, analytics). See
+    app/core/security/ownership.py::authorize_staff_access's docstring
+    for why plain require_permission() is NOT safe to reuse here: some
+    permissions (CUSTOMERS_READ in particular) are held by the bare
+    CUSTOMER role too, for reading their OWN profile only — this
+    dependency additionally requires actor.is_staff so a customer can
+    never satisfy an admin-wide list this way.
+
+    A single-resource admin GET (e.g. GET /api/v1/customers/{id}) does
+    NOT use this — it uses require_customer_profile_access below, which
+    already correctly lets either the owner OR staff through, because it
+    has an actual target_customer_id to check ownership against."""
+
+    def _dependency(actor: CurrentActor = Depends(require_authenticated_user)) -> CurrentActor:
+        decision = authorize_staff_access(actor, required_permission=permission)
+        if not decision.allowed:
+            raise AuthError(decision.error_code or AuthErrorCode.FORBIDDEN.value, "You don't have access to do that.")
         return actor
 
     return _dependency

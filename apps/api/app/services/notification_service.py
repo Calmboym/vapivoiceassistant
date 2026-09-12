@@ -44,6 +44,27 @@ right builder, dispatch to the right provider method, and audit the
 outcome. See that module's docstring for the content rules themselves
 (never a passport number, never a fabricated cancellation fee/baggage
 figure).
+
+T-7 (WBS-6.3 security-testing pass) finding, fixed here: the three
+failure-audit calls below used to store the provider's raw error
+`message` string in AuditLog.event_metadata alongside `error_code`.
+Both Twilio's and Resend's own documented error-response shapes echo the
+rejected input back inside that message text for several real,
+non-hypothetical error codes (e.g. Twilio 21211/21614 "Invalid 'To'/
+'From' Phone Number" include the phone number; Resend's field-validation
+errors include the invalid address) — so a delivery failure could put a
+customer's phone number or email address into an audit-log field that
+T-6's admin dashboard (docs/PROJECT_STATE.md's "admin dashboard" section)
+renders verbatim, undoing exactly the PII-out-of-logs discipline
+`arguments_redacted`/`customer_service.py`'s "field names only" pattern
+were built for elsewhere in this same table. `error_code` alone (a
+bounded, provider-defined value, not request-echoed free text) is kept;
+`error_message` is dropped from what's persisted. This is scoped to the
+two channels T-5 built in this file — it does not touch
+cancellation_service.py's separate `payment.refund_failed_during_
+cancellation` audit entry (a different provider family/error shape,
+lower confidence of the same pattern, and out of T-7's stated scope —
+see the T-7 handoff for why that one is documented rather than changed).
 """
 
 from __future__ import annotations
@@ -108,9 +129,10 @@ class NotificationService:
             )
             self._audit(booking.pnr, "notification.booking_confirmation_sent", {"channel": "email"})
         except EmailDeliveryError as exc:
+            # error_message intentionally omitted — see module docstring (T-7).
             self._audit(
                 booking.pnr, "notification.booking_confirmation_failed",
-                {"channel": "email", "error_code": exc.code, "error_message": exc.message},
+                {"channel": "email", "error_code": exc.code},
             )
 
     # ------------------------------------------------------- payment link
@@ -135,9 +157,10 @@ class NotificationService:
             )
             self._audit(booking.pnr, "notification.payment_link_sent", {"channel": "email"})
         except EmailDeliveryError as exc:
+            # error_message intentionally omitted — see module docstring (T-7).
             self._audit(
                 booking.pnr, "notification.payment_link_failed",
-                {"channel": "email", "error_code": exc.code, "error_message": exc.message},
+                {"channel": "email", "error_code": exc.code},
             )
 
         if also_sms:
@@ -149,9 +172,10 @@ class NotificationService:
                 )
                 self._audit(booking.pnr, "notification.payment_link_sent", {"channel": "sms"})
             except SmsDeliveryError as exc:
+                # error_message intentionally omitted — see module docstring (T-7).
                 self._audit(
                     booking.pnr, "notification.payment_link_failed",
-                    {"channel": "sms", "error_code": exc.code, "error_message": exc.message},
+                    {"channel": "sms", "error_code": exc.code},
                 )
 
     # ------------------------------------------------------- internal

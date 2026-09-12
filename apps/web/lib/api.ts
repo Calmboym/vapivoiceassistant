@@ -64,4 +64,10 @@ export const api = {
   get: <T>(path: string) => apiFetch<T>(path),
   post: <T>(path: string, json?: unknown) =>
     apiFetch<T>(path, { method: "POST", body: json !== undefined ? JSON.stringify(json) : undefined }),
+  // Phase 9 (T-6) — the admin dashboard's customer-contact-edit is the
+  // first PATCH this app makes; apiFetch already handled PATCH's CSRF
+  // header via MUTATING_METHODS above, so this is just the same
+  // convenience wrapper `post` already gets, nothing new underneath.
+  patch: <T>(path: string, json?: unknown) =>
+    apiFetch<T>(path, { method: "PATCH", body: json !== undefined ? JSON.stringify(json) : undefined }),
 };

@@ -23,7 +23,7 @@ Legend: ✅ done & verified in this sandbox · 🟡 written, not yet verified
 | 1 | `docker compose up --build` works | 🟡 | Files are written and internally consistent; never actually run — no Docker access in any sandbox used on this project to date, this audit's included. **Run this first in your environment and report back anything that breaks.** |
 | 2 | PostgreSQL starts | 🟡 | Compose config is standard `postgres:16-alpine`; not run here. |
 | 3 | Redis starts | 🟡 | Compose config is standard `redis:7-alpine`; app also runs without it (in-process fallback). |
-| 4 | FastAPI starts | 🟡 | Every `app/**/*.py` file passes `python3 -m py_compile` (no syntax errors — re-confirmed this session, all 119 files, up from 114 before T-5's 4 new files: `content.py`, its package `__init__.py`, `sms_provider.py`, `notification_service.py`), and the dependency-free half imports and runs correctly. The FastAPI/SQLAlchemy half has never actually been imported — `pip install` is required first. |
+| 4 | FastAPI starts | 🟡 | Every `app/**/*.py` file passes `python3 -m py_compile` (no syntax errors — re-confirmed this session, all 131 files, up from 119 before T-6's 12 new files: `app/core/admin/{__init__,analytics}.py`, `app/repositories/audit_log_repository.py`, `app/services/{customer,call,admin}_service.py`, `app/schemas/{customer,call,admin}.py`, `app/api/routes/{customers,calls,admin}.py`), and the dependency-free half imports and runs correctly. The FastAPI/SQLAlchemy half has never actually been imported — `pip install` is required first. |
 | 5 | Next.js starts | 🟡 | Never run — no `npm install` possible here (registry blocked). |
 | 6 | Migrations run | 🟡 | Hand-written (no `alembic` installed to autogenerate/run it), checked column-by-column against the actual model files — 0001 through 0004, re-checked this audit. |
 | 7 | Seed data loads | 🟡 | `app/db/seed.py` written, not run. Reference data (18 airports incl. all spec §8 minimums, London disambiguation group, aircraft) confirmed present in `app/providers/airline/reference_data.py` by direct inspection. |
@@ -35,17 +35,17 @@ Legend: ✅ done & verified in this sandbox · 🟡 written, not yet verified
 | 13 | Modification works | ✅ | Verified: `test_update_booking_rebooks_to_a_new_flight_and_recomputes_price`, `test_update_booking_is_idempotent`, `test_cannot_modify_a_cancelled_booking`. |
 | 14 | Passenger management works | ✅ | Verified: add/remove passenger recomputes price correctly; removing the last passenger is rejected. No `update_passenger` path exists yet (see item 57). |
 | 15 | Stripe test flow works | 🟡 | `create_payment_session`/`get_payment_status`/`refund_payment` implemented (model, provider abstraction, service, web routes, Vapi tools) and the dependency-free portions (state machine, mock provider incl. refund, argument mapping, authorization) are ✅ verified — see `docs/PAYMENTS.md` §12 for the full per-component breakdown. `StripePaymentProvider` itself and everything requiring FastAPI/SQLAlchemy remain 🟡 unexecuted (no network access in any sandbox to date, this session's included) — a real Stripe test-mode Checkout Session or refund completing end-to-end has not been attempted. |
-| 16 | Vapi webhook works | ✅ / 🟡 | **Phase 5, complete as code.** `POST /api/v1/vapi/webhook` — shared-secret auth, `end-of-call-report`/`tool-calls` event handling, `Call`/`ToolExecution` persistence. Auth logic + dispatch ✅ executed (`WebhookAuthTests` etc., part of the 267 below — see item 31). The FastAPI route itself is 🟡, same constraint as every HTTP route in this table. |
-| 17 | Vapi tools work | ✅ / 🟡 | **Phase 5, complete.** 21 tool JSON schemas (`app/core/vapi/tool_schemas.py`), 23-entry authorization matrix, 16 wired to real dispatch functions, 5 correctly registered `implemented=False` placeholders for genuinely unbuilt domain features (seat selection, baggage add, support tickets, callback requests). Schema ⇄ matrix ⇄ dispatch consistency independently re-verified this audit. ✅ logic-level tests pass; HTTP execution 🟡. **This audit found 8 tools from the original spec §19 list not registered at all** (`update_passenger`, `get_customer`, `create_customer`, `update_customer`, `end_call`, `get_airport`, `search_airports`, `get_faq`) — see `docs/PROJECT_ROADMAP.md` §6.4, a new finding, not previously tracked here. |
+| 16 | Vapi webhook works | ✅ / 🟡 | **Phase 5, complete as code.** `POST /api/v1/vapi/webhook` — shared-secret auth, `end-of-call-report`/`tool-calls` event handling, `Call`/`ToolExecution` persistence. Auth logic + dispatch ✅ executed (`WebhookAuthTests` etc., part of the 289 below — see item 31). The FastAPI route itself is 🟡, same constraint as every HTTP route in this table. |
+| 17 | Vapi tools work | ✅ / 🟡 | **Phase 5, complete.** 21 tool JSON schemas (`app/core/vapi/tool_schemas.py`), 23-entry authorization matrix, 16 wired to real dispatch functions, 5 correctly registered `implemented=False` placeholders for genuinely unbuilt domain features (seat selection, baggage add, support tickets, callback requests). Schema ⇄ matrix ⇄ dispatch consistency independently re-verified this audit. ✅ logic-level tests pass; HTTP execution 🟡. **This audit found 8 tools from the original spec §19 list not registered at all** (`update_passenger`, `get_customer`, `create_customer`, `update_customer`, `end_call`, `get_airport`, `search_airports`, `get_faq`) — see `docs/PROJECT_ROADMAP.md` §6.4, a new finding, not previously tracked here. **Updated 2026-09-11 (T-6):** `get_customer`/`update_customer` now have a backing service to call (`CustomerService`, item 68 below) — the remaining gap for those two is the tool wrapper itself (schema/matrix/dispatch), not "nothing to call," which is T-8's scope. |
 | 18 | Vapi Assistant can call the backend | 🟡 | The webhook/tool layer that would receive such a call is ✅ complete and tested (item 16–17). Whether a real Vapi Assistant configuration actually calls it has never been tested — no live Vapi account has been used on this project. `scripts/setup_vapi.py` (spec §51), which would create/attach the Assistant, was never written. |
 | 19 | Inbound phone call reaches the assistant | ⬜ | Not started — needs a live Vapi account + phone number + `scripts/setup_vapi.py`. This is the one piece of the original spec's Phase 6 that Phase 5's work did not already cover — see `docs/PROJECT_ROADMAP.md` §6.1. |
 | 20–25 | AI can search/read/book/retrieve/cancel/transfer | ✅ (logic) / ⬜ (live) | The tool-dispatch logic for all six of these exists and is tested (search_flights, get_booking, create_booking, cancel_booking, modify_booking, transfer_to_human — item 17). None of the six has been exercised via an actual live voice call — that requires item 19 first. |
 | 26 | Failed provider calls are handled gracefully | 🟡 | `ProviderError` → structured, customer-safe envelope exists (`app/core/exceptions.py`); not exercised against a real failure injection test. |
 | 27 | Duplicate tool calls are idempotent | ✅ | Verified at the application-idempotency-store level, the provider level, and (Phase 5) the Vapi `ToolExecution`/`vapi_tool_call_id` level. |
 | 28 | Sensitive information is redacted | ✅ / 🟡 | `app/core/security/redaction.py` — pure, recursive, depth-capped, plus a secret-value-pattern scan — ✅ real, executed (`RedactionTests`). Passport encryption/masking remains 🟡 — never executed, needs `pydantic`-based settings which aren't importable here either. |
-| 29 | RBAC works | ✅ / 🟡 | Permission-resolution engine (`app/core/security/rbac.py`, **7 roles × 26 permissions** — corrected from an earlier "25," see `docs/PROJECT_ROADMAP.md` §6.5) and the IDOR-prevention core (`app/core/security/ownership.py`) are ✅ real, executed, passing. Wired into every booking/passenger/payment mutation route. HTTP-level wiring itself is 🟡. |
+| 29 | RBAC works | ✅ / 🟡 | Permission-resolution engine (`app/core/security/rbac.py`, **7 roles × 26 permissions** — corrected from an earlier "25," see `docs/PROJECT_ROADMAP.md` §6.5) and the IDOR-prevention core (`app/core/security/ownership.py`) are ✅ real, executed, passing. Wired into every booking/passenger/payment mutation route. HTTP-level wiring itself is 🟡. **Updated 2026-09-11 (T-6):** `authorize_staff_access()` added — a new primitive for admin-wide LIST endpoints with no single resource owner to check (e.g. list-every-customer), which the pre-existing `authorize_resource_access`/`authorize_customer_profile_access` functions don't cover on their own; ✅ 8 new tests (`StaffAccessTests`). |
 | 30 | Audit logs work | 🟡 | Never executed against a real DB. **Known integrity gap, found this audit**: the direct REST booking routes trust an unauthenticated `x-charter123-call-id` header to build the audit log's `actor` string — no privilege impact, but a real forgeable-attribution gap. See `docs/PROJECT_ROADMAP.md` §6.6. |
-| 31 | Tests pass | ✅ / 🟡 | **267/267 dependency-free tests pass** — re-executed and confirmed 2026-09-09 (T-5): `cd apps/api && python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api tests.test_notifications_core -v` → `OK (skipped=8)`. Breakdown: 30 (Phase 1-3) + 95 (Phase 4 security-core) + 65 (Phase 5 Vapi-core) + 46 (Phase 7, incl. T-3's `refund_payment`) + 31 (Phase 8/T-5 notifications, new) — corrected this session from a stale 223/93/56 carried in this row since the 2026-09-07 audit, which never actually summed to its own claimed total; re-counted by direct execution, not assumed. The 8 skips are `tests/test_api_security.py` (6 classes/18 methods) and `tests/test_vapi_api.py` (2 classes) — written against real FastAPI `TestClient`, correctly skip (not fail) with no network. |
+| 31 | Tests pass | ✅ / 🟡 | **289/289 dependency-free tests pass** — re-executed and confirmed 2026-09-11 (T-6): `cd apps/api && python3 -m unittest tests.test_core_logic tests.test_security_core tests.test_vapi_core tests.test_payments_core tests.test_api_security tests.test_vapi_api tests.test_notifications_core tests.test_admin_core -v` → `OK (skipped=8)`. Breakdown: 30 (Phase 1-3) + 104 (Phase 4 security-core, incl. T-6's 9 new) + 65 (Phase 5 Vapi-core) + 46 (Phase 7, incl. T-3's `refund_payment`) + 31 (Phase 8/T-5 notifications) + 13 (Phase 9/T-6 admin analytics, new) — re-counted by direct execution, not assumed. The 8 skips are `tests/test_api_security.py` (6 classes/18 methods) and `tests/test_vapi_api.py` (2 classes) — written against real FastAPI `TestClient`, correctly skip (not fail) with no network; unchanged by T-6. |
 | 32 | OpenAPI documentation works | 🟡 | FastAPI generates this automatically from route/schema code at `/docs`; never actually loaded (no FastAPI installed anywhere this project has been built). |
 | 33 | README is complete | ✅ | See `/README.md` — corrected this audit for the same staleness described in the banner above. |
 | 34 | Production configuration is documented | ✅ | `docs/ENVIRONMENT_VARIABLES.md` (corrected this audit — see banner above) + `Settings.validate_for_production()` fails fast on missing required config. |
@@ -72,7 +72,7 @@ every real bug found and fixed during this phase.
 | 46 | Security headers | 🟡 | Written; not executed. |
 | 47 | Secret management | ✅ | Audited. **A real bug was found and fixed**: `requirements.txt` pinned `cryptography>=43.0,<44.0`, excluding every version with Argon2id support (added in 44.0.0). Fixed to `>=44.0,<47.0`. |
 | 48 | Log redaction | ✅ | See item 28. |
-| 49 | Frontend auth foundation | 🟡 | Login/register/account pages, `AuthContext`, a UX-only route guard. Never run — no `npm install` here. |
+| 49 | Frontend auth foundation | 🟡 | Login/register/account pages, `AuthContext`, a UX-only route guard. Never run — no `npm install` here. **Updated 2026-09-11 (T-6):** the same route-guard pattern was reused for the new `/admin` section (`middleware.ts` + `app/admin/layout.tsx`'s client-side staff check) — see item 70 below. |
 | 50 | Phase 1-3 regression check | ✅ | Re-run and re-confirmed green after every Phase 4 change, and again after Phase 5 and Phase 7 M1. |
 
 ## Phase 5 — Vapi Integration
@@ -126,6 +126,20 @@ represented only by item 61 above, under Phase 7).
 | 65 | Payment-link delivery (spec, `docs/PAYMENTS.md` §8) | ✅ / 🟡 | Same split as item 64 — content-builder ✅ executed (same 31 tests); wiring into `PaymentService.create_payment_session` is 🟡. Best-effort/non-blocking by design: a delivery failure is caught, audited, and never rolls back a payment session that already succeeded with Stripe. |
 | 66 | A real email or SMS actually arriving | ⬜ | Not attempted — needs real `RESEND_API_KEY`/`TWILIO_*` credentials and network egress, neither of which any sandbox this project has used has ever had. |
 
+## Phase 9 — Admin Dashboard
+
+Legend as above. See `docs/TASK_BOARD.md`'s T-6 entry and
+`docs/handoffs/2026-09-11-t6-admin-dashboard.md` for the full engineering
+account.
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| 67 | `authorize_staff_access()` authorization primitive | ✅ | New this task — admin-wide LIST endpoints (list-every-customer, list-every-call, list-every-booking) have no single resource owner to compare against, unlike a single booking/customer lookup; ✅ executed, 8 tests (`StaffAccessTests`) plus one `RbacTests` addition pinning that `admin.*`/`calls.*` permissions are never granted to the bare `CUSTOMER` role (so the pre-existing `require_permission()` stays safe to use, unmodified, for the `/api/v1/admin/*` and `/api/v1/calls/*` routes). |
+| 68 | `/api/v1/customers` routes (list/get/patch) | 🟡 | `app/api/routes/customers.py` — list is staff-only (`authorize_staff_access`), get/patch reuse the pre-existing (Phase 4, previously unused) `authorize_customer_profile_access` so either the owning customer or staff can reach them. `create_customer` deliberately not built — see `docs/TASK_BOARD.md` T-6, "Decisions/deviations" #1. Written, reviewed — needs FastAPI/SQLAlchemy to execute. |
+| 69 | `/api/v1/calls` routes (list/get) + `/api/v1/admin/{bookings,analytics}` | 🟡 | `app/api/routes/{calls,admin}.py` — staff-only via plain `require_permission(CALLS_READ)`/`require_permission(ADMIN_READ)` (item 67 confirms this is safe without the new primitive). Booking-detail route includes the full audit trail (`AuditLogRepository`, this table's first reader) and every payment attempt, not just the latest. Written, reviewed — needs FastAPI/SQLAlchemy to execute. |
+| 70 | `app/core/admin/analytics.py` (revenue/conversion calculations) | ✅ | Pure, stdlib-only — same discipline as item 64's content builders. ✅ executed, 13 tests (`tests/test_admin_core.py`). Deliberately reports no "quote conversion rate" — not computable from what `Booking`/`Payment` persist today (`"QUOTE"` is declared but never actually written to a stored `Booking.status` by any code path, confirmed by grep); reports a payment-conversion rate, cancellation rate, and gross/net revenue from actually-`SUCCEEDED` `Payment` rows instead — see that module's docstring. |
+| 71 | Next.js `/admin` pages | 🟡 | 7 pages (overview/analytics, bookings list+detail, customers list+detail with a contact-info edit form, calls list+detail) + a staff-only layout gate — `apps/web/app/admin/**`, this app's first `components/` directory. Syntax-checked via a standalone `tsc --noResolve` pass this session (zero genuine syntax errors; every remaining diagnostic cross-checked as an artifact of the missing `node_modules`, identical to diagnostics already present in pre-existing, untouched `contexts/AuthContext.tsx` under the same harness — see `docs/TASK_BOARD.md` T-6's "Testing status" for the full breakdown). Never run against a real `next build`/browser — no `npm install` possible here. |
+
 ## What this means practically
 
 **Do this first, in an environment with normal network access:**
@@ -148,18 +162,22 @@ above; it's implemented, unexecuted pending T-1). Updated 2026-09-09
 (T-4/T-5) — `scripts/setup_vapi.py` and email/SMS notifications are no
 longer in this list either (see items 18/19 and the Phase 8 section
 above; both written, unexecuted pending live accounts + network access).
-Remaining, from the
+Updated 2026-09-11 (T-6) — the admin dashboard is no longer in this list
+either (see items 67–71 and the Phase 9 section above; written,
+unexecuted pending T-1's stack + a real `npm install`). Remaining, from
+the
 original spec: callback requests
 (§45), the FAQ/knowledge base (§46), private charter quoting (§47–48),
-the admin dashboard (§32–34 — the backend authorization boundary exists;
-no routes or UI do), i18n (§41), GDPR export/deletion endpoints (§66),
+i18n (§41), GDPR export/deletion endpoints (§66),
 call recording/transcription (§21–22, 67), the Playwright/E2E/voice test
 suites (§55–56).
 
 **New, from this audit**, not previously tracked anywhere: 8 tools from
 spec §19 with no registration at all (`update_passenger`, `get_customer`,
 `create_customer`, `update_customer`, `end_call`, `get_airport`,
-`search_airports`, `get_faq` — see item 17); the audit-log actor-
+`search_airports`, `get_faq` — see item 17; **updated 2026-09-11, T-6:**
+`get_customer`/`update_customer` now have a backing service to call,
+the tool wrapper itself is T-8's remaining scope); the audit-log actor-
 attribution gap on direct REST routes (see item 30).
 
 These follow the build order in `docs/PROJECT_ROADMAP.md` §7 — see that
